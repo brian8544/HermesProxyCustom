@@ -310,8 +310,14 @@ namespace HermesProxy.World.Client
             {
                 uint displayId = packet.ReadUInt32();
                 if (displayId != 0)
-                    creature.Display.CreatureDisplay.Add(new CreatureXDisplay(displayId, 1, 0));
+                {
+                    uint safeDisplayId = IsWotlkFrontendClient() ? GameData.GetSafeCreatureDisplayId(displayId) : displayId;
+                    creature.Display.CreatureDisplay.Add(new CreatureXDisplay(safeDisplayId, 1, 0));
+                }
             }
+
+            if (IsWotlkFrontendClient() && creature.Display.CreatureDisplay.Count == 0)
+                creature.Display.CreatureDisplay.Add(new CreatureXDisplay(GameData.GetSafeCreatureDisplayId(), 1, 0));
 
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
@@ -329,6 +335,7 @@ namespace HermesProxy.World.Client
             creature.Leader = packet.ReadBool();
 
             int questItems = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192) ? 6 : 4;
+            creature.MovementInfoID = 0;
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
             {
                 for (uint i = 0; i < questItems; ++i)
@@ -338,12 +345,11 @@ namespace HermesProxy.World.Client
                         creature.QuestItems.Add(itemId);
                 }
 
-                packet.ReadUInt32(); // Movement ID
+                creature.MovementInfoID = packet.ReadUInt32();
             }
 
             // Placeholders
             creature.Flags[0] |= 134217728;
-            creature.MovementInfoID = 1693;
             creature.Class = 1;
 
             GameData.StoreCreatureTemplate(response.CreatureID, creature);
@@ -381,8 +387,21 @@ namespace HermesProxy.World.Client
                 gameObject.UnkString = packet.ReadCString();
             }
 
-            for (int i = 0; i < 24; i++)
+            // Classic-era servers may only send the first 6 GO data dwords,
+            // while later builds send the full 24. Read safely and zero-fill.
+            int expectedDataWords = LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180) ? 6 : 24;
+            var stream = packet.GetCurrentStream();
+            int remainingBytes = (int)(stream.Length - stream.Position);
+            int readableWords = Math.Min(expectedDataWords, remainingBytes / 4);
+
+            for (int i = 0; i < readableWords; i++)
                 gameObject.Data[i] = packet.ReadInt32();
+
+            for (int i = readableWords; i < 24; i++)
+                gameObject.Data[i] = 0;
+
+            if (readableWords < expectedDataWords)
+                Log.Print(LogType.Warn, $"[GOQuery] Entry={response.GameObjectID} short raw data payload: expected {expectedDataWords} dwords, got {readableWords}.");
 
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 gameObject.Size = packet.ReadFloat();
@@ -397,6 +416,8 @@ namespace HermesProxy.World.Client
                         gameObject.QuestItems.Add(itemId);
                 }
             }
+
+            GetSession().GameState.GameObjectQueryCache[response.GameObjectID] = response;
 
             SendPacketToClient(response);
         }
@@ -434,6 +455,9 @@ namespace HermesProxy.World.Client
                 string maleText = packet.ReadCString().TrimEnd().Replace("\0", "");
                 string femaleText = packet.ReadCString().TrimEnd().Replace("\0", "");
                 uint language = packet.ReadUInt32();
+                response.MaleText[i] = maleText;
+                response.FemaleText[i] = femaleText;
+                response.Language[i] = language;
 
                 ushort[] emoteDelays = new ushort[3];
                 ushort[]  emotes = new ushort[3];
@@ -441,6 +465,8 @@ namespace HermesProxy.World.Client
                 {
                     emoteDelays[j] = (ushort)packet.ReadUInt32();
                     emotes[j] = (ushort)packet.ReadUInt32();
+                    response.EmoteDelays[i, j] = emoteDelays[j];
+                    response.Emotes[i, j] = emotes[j];
                 }
 
                 const string placeholderGossip = "Greetings $N";
@@ -458,39 +484,262 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_ITEM_QUERY_SINGLE_RESPONSE)]
         void HandleItemQueryResponse(WorldPacket packet)
         {
-            var entry = packet.ReadEntry();
-            if (entry.Value)
+            long startPos = packet.GetCurrentStream().Position;
+            uint firstDword = packet.ReadUInt32();
+            packet.GetCurrentStream().Position = startPos;
+
+            bool hasLeadingEntry =
+                LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180) ||
+                firstDword > 64 ||
+                (GetSession().GameState.PendingLegacyItemQueries.Count > 0 &&
+                 GetSession().GameState.PendingLegacyItemQueries.Peek() == firstDword);
+            uint entryId;
+
+            if (hasLeadingEntry)
             {
-                if (GetSession().GameState.RequestedItemHotfixes.Contains((uint)entry.Key))
+                var entry = packet.ReadEntry();
+                if (entry.Value)
                 {
-                    DBReply reply = new();
-                    reply.RecordID = (uint)entry.Key;
-                    reply.TableHash = DB2Hash.Item;
-                    reply.Status = HotfixStatus.Invalid;
-                    reply.Timestamp = (uint)Time.UnixTime;
-                    SendPacketToClient(reply);
+                    if (IsWotlkFrontendClient())
+                    {
+                        byte[] missingPayload = BuildWotlkMissingItemQueryResponsePayload((uint)entry.Key);
+                        TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_ITEM_QUERY_SINGLE_RESPONSE, missingPayload);
+                    }
+
+                    if (GetSession().GameState.RequestedItemHotfixes.Contains((uint)entry.Key))
+                    {
+                        DBReply reply = new();
+                        reply.RecordID = (uint)entry.Key;
+                        reply.TableHash = DB2Hash.Item;
+                        reply.Status = HotfixStatus.Invalid;
+                        reply.Timestamp = (uint)Time.UnixTime;
+                        SendPacketToClient(reply);
+                    }
+                    if (GetSession().GameState.RequestedItemSparseHotfixes.Contains((uint)entry.Key))
+                    {
+                        DBReply reply2 = new();
+                        reply2.RecordID = (uint)entry.Key;
+                        reply2.TableHash = DB2Hash.ItemSparse;
+                        reply2.Status = HotfixStatus.Invalid;
+                        reply2.Timestamp = (uint)Time.UnixTime;
+                        SendPacketToClient(reply2);
+                    }
+                    return;
                 }
-                if (GetSession().GameState.RequestedItemSparseHotfixes.Contains((uint)entry.Key))
+
+                entryId = (uint)entry.Key;
+                if (GetSession().GameState.PendingLegacyItemQueries.Count > 0 &&
+                    GetSession().GameState.PendingLegacyItemQueries.Peek() == entryId)
+                    GetSession().GameState.PendingLegacyItemQueries.Dequeue();
+            }
+            else
+            {
+                if (GetSession().GameState.PendingLegacyItemQueries.Count == 0)
                 {
-                    DBReply reply2 = new();
-                    reply2.RecordID = (uint)entry.Key;
-                    reply2.TableHash = DB2Hash.ItemSparse;
-                    reply2.Status = HotfixStatus.Invalid;
-                    reply2.Timestamp = (uint)Time.UnixTime;
-                    SendPacketToClient(reply2);
+                    Log.Print(LogType.Warn, "[ItemQuery] Received response without entry and no pending query id.");
+                    return;
                 }
-                return;
+
+                entryId = GetSession().GameState.PendingLegacyItemQueries.Dequeue();
             }
 
             ItemTemplate item = new ItemTemplate();
-            item.ReadFromLegacyPacket((uint)entry.Key, packet);
+            item.ReadFromLegacyPacket(entryId, packet);
+
+            if (IsWotlkFrontendClient())
+            {
+                byte[] payload = BuildWotlkItemQueryResponsePayload(entryId, item);
+                TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_ITEM_QUERY_SINGLE_RESPONSE, payload);
+            }
 
             SendItemUpdatesIfNeeded(item);
-            GameData.StoreItemTemplate((uint)entry.Key, item);
+            GameData.StoreItemTemplate(entryId, item);
+        }
+
+        static byte[] BuildWotlkMissingItemQueryResponsePayload(uint entryId)
+        {
+            WorldPacket payload = new();
+            payload.WriteUInt32(entryId | 0x80000000);
+            return payload.GetData() ?? Array.Empty<byte>();
+        }
+
+        static byte[] BuildWotlkItemQueryResponsePayload(uint entryId, ItemTemplate item)
+        {
+            WorldPacket payload = new();
+
+            payload.WriteUInt32(entryId);
+            payload.WriteInt32(item.Class);
+            payload.WriteUInt32(item.SubClass);
+            payload.WriteInt32(item.SoundOverrideSubclass);
+            payload.WriteCString(item.Name[0] ?? string.Empty);
+            payload.WriteUInt8(0);
+            payload.WriteUInt8(0);
+            payload.WriteUInt8(0);
+
+            uint displayId = item.DisplayID;
+            if (displayId == 0 || GameData.GetItemIconFileDataIdByDisplayId(displayId) == 0)
+            {
+                uint mappedDisplay = GameData.GetItemDisplayId(entryId);
+                if (mappedDisplay != 0 && GameData.GetItemIconFileDataIdByDisplayId(mappedDisplay) != 0)
+                    displayId = mappedDisplay;
+            }
+            if (displayId == 0)
+                displayId = 25; // conservative fallback display id
+
+            payload.WriteUInt32(displayId);
+            payload.WriteInt32(item.Quality);
+            payload.WriteUInt32(item.Flags);
+            payload.WriteUInt32(item.FlagsExtra);
+            payload.WriteUInt32(item.BuyPrice);
+            payload.WriteUInt32(item.SellPrice);
+            payload.WriteInt32(item.InventoryType);
+            payload.WriteInt32(item.AllowedClasses);
+            payload.WriteInt32(item.AllowedRaces);
+            payload.WriteUInt32(item.ItemLevel);
+            payload.WriteUInt32(item.RequiredLevel);
+            payload.WriteUInt32(item.RequiredSkillId);
+            payload.WriteUInt32(item.RequiredSkillLevel);
+            payload.WriteUInt32(item.RequiredSpell);
+            payload.WriteUInt32(item.RequiredHonorRank);
+            payload.WriteUInt32(item.RequiredCityRank);
+            payload.WriteUInt32(item.RequiredRepFaction);
+            payload.WriteUInt32(item.RequiredRepValue);
+            payload.WriteInt32(item.MaxCount);
+            payload.WriteInt32(item.MaxStackSize);
+            payload.WriteUInt32(item.ContainerSlots);
+
+            uint statsCount = item.StatsCount;
+            if (statsCount == 0)
+                statsCount = (uint)Math.Min(item.StatTypes.Length, item.StatValues.Length);
+            statsCount = Math.Min(statsCount, (uint)Math.Min(item.StatTypes.Length, item.StatValues.Length));
+            int statsCountInt = (int)statsCount;
+
+            List<(int Type, int Value)> stats = new(statsCountInt);
+            for (int i = 0; i < statsCountInt; i++)
+            {
+                int statType = item.StatTypes[i];
+                int statValue = item.StatValues[i];
+
+                // Vanilla payloads commonly carry unused stats as -1/0.
+                // Forwarding those to WotLK as u32 can destabilize tooltips.
+                if (statType < 0 || statValue == 0)
+                    continue;
+                if (!IsVanillaItemStatTypeSafeForWotlk(statType))
+                    continue;
+
+                stats.Add((statType, statValue));
+            }
+
+            payload.WriteUInt32((uint)stats.Count);
+            foreach (var stat in stats)
+            {
+                payload.WriteInt32(stat.Type);
+                payload.WriteInt32(stat.Value);
+            }
+
+            payload.WriteInt32(0);
+            payload.WriteUInt32(0);
+
+            for (int i = 0; i < 2; i++)
+            {
+                payload.WriteFloat(i < item.DamageMins.Length ? item.DamageMins[i] : 0.0f);
+                payload.WriteFloat(i < item.DamageMaxs.Length ? item.DamageMaxs[i] : 0.0f);
+                int damageType = i < item.DamageTypes.Length ? item.DamageTypes[i] : 0;
+                payload.WriteInt32(damageType);
+            }
+
+            payload.WriteUInt32(item.Armor);
+            payload.WriteUInt32(item.HolyResistance);
+            payload.WriteUInt32(item.FireResistance);
+            payload.WriteUInt32(item.NatureResistance);
+            payload.WriteUInt32(item.FrostResistance);
+            payload.WriteUInt32(item.ShadowResistance);
+            payload.WriteUInt32(item.ArcaneResistance);
+            payload.WriteUInt32(item.Delay);
+            payload.WriteInt32(item.AmmoType);
+            payload.WriteFloat(item.RangedMod);
+
+            for (int i = 0; i < 5; i++)
+            {
+                int spellId = i < item.TriggeredSpellIds.Length ? item.TriggeredSpellIds[i] : 0;
+                int spellType = i < item.TriggeredSpellTypes.Length ? item.TriggeredSpellTypes[i] : 0;
+                int spellCharges = i < item.TriggeredSpellCharges.Length ? item.TriggeredSpellCharges[i] : 0;
+                int spellCooldown = i < item.TriggeredSpellCooldowns.Length ? item.TriggeredSpellCooldowns[i] : -1;
+                uint spellCategory = i < item.TriggeredSpellCategories.Length ? item.TriggeredSpellCategories[i] : 0;
+                int spellCategoryCooldown = i < item.TriggeredSpellCategoryCooldowns.Length ? item.TriggeredSpellCategoryCooldowns[i] : -1;
+
+                if (spellId <= 0)
+                {
+                    payload.WriteUInt32(0);
+                    payload.WriteInt32(0);
+                    payload.WriteInt32(0);
+                    payload.WriteUInt32(uint.MaxValue);
+                    payload.WriteUInt32(0);
+                    payload.WriteUInt32(uint.MaxValue);
+                }
+                else
+                {
+                    payload.WriteUInt32((uint)spellId);
+                    payload.WriteInt32(spellType);
+                    payload.WriteInt32(spellCharges);
+                    payload.WriteUInt32(unchecked((uint)spellCooldown));
+                    payload.WriteUInt32(spellCategory);
+                    payload.WriteUInt32(unchecked((uint)spellCategoryCooldown));
+                }
+            }
+
+            payload.WriteInt32(item.Bonding);
+            payload.WriteCString(item.Description ?? string.Empty);
+            payload.WriteUInt32(item.PageText);
+            payload.WriteInt32(item.Language);
+            payload.WriteInt32(item.PageMaterial);
+            payload.WriteUInt32(item.StartQuestId);
+            payload.WriteUInt32(item.LockId);
+            payload.WriteInt32(item.Material);
+            payload.WriteInt32(item.SheathType);
+            payload.WriteInt32(0);
+            payload.WriteUInt32(0);
+            payload.WriteUInt32(item.Block);
+            payload.WriteUInt32(item.ItemSet);
+            payload.WriteUInt32(item.MaxDurability);
+            payload.WriteUInt32(item.AreaID);
+            payload.WriteInt32(item.MapID);
+            payload.WriteUInt32(item.BagFamily);
+            payload.WriteInt32(item.TotemCategory);
+
+            for (int i = 0; i < 3; i++)
+            {
+                payload.WriteInt32(i < item.ItemSocketColors.Length ? item.ItemSocketColors[i] : 0);
+                payload.WriteUInt32(item.SocketContent[i]);
+            }
+
+            payload.WriteInt32(item.SocketBonus);
+            payload.WriteInt32(item.GemProperties);
+            payload.WriteInt32(item.RequiredDisenchantSkill);
+            payload.WriteFloat(item.ArmorDamageModifier);
+            payload.WriteUInt32(item.Duration);
+            payload.WriteInt32(item.ItemLimitCategory);
+            payload.WriteInt32(item.HolidayID);
+
+            return payload.GetData() ?? Array.Empty<byte>();
+        }
+
+        static bool IsVanillaItemStatTypeSafeForWotlk(int statType)
+        {
+            // MaNGOS classic item stat ids are sparse and only define:
+            // mana, health, agility, strength, intellect, spirit, stamina.
+            // Filtering here prevents custom/shifted 1.12 values from being
+            // interpreted as Wrath combat ratings or spell power in tooltips.
+            return statType == 0 ||
+                   statType == 1 ||
+                   (statType >= 3 && statType <= 7);
         }
 
         void SendItemUpdatesIfNeeded(ItemTemplate item)
         {
+            if (IsWotlkFrontendClient())
+                return;
+
             Server.Packets.HotFixMessage? reply;
 
             reply = GameData.GenerateItemUpdateIfNeeded(item);

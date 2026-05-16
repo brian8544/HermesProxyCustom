@@ -122,4 +122,68 @@ namespace HermesProxy.World.Client
         byte m_send_i, m_send_j, m_recv_i, m_recv_j;
         bool m_isInitialized;
     }
+
+    public class WotlkWorldCrypt : LegacyWorldCrypt
+    {
+        // TrinityCore WorldPacketCrypt.cpp
+        static readonly byte[] ServerEncryptionKey =
+        {
+            0xCC, 0x98, 0xAE, 0x04, 0xE8, 0x97, 0xEA, 0xCA,
+            0x12, 0xDD, 0xC0, 0x93, 0x42, 0x91, 0x53, 0x57
+        };
+
+        static readonly byte[] ServerDecryptionKey =
+        {
+            0xC2, 0xB3, 0x72, 0x3C, 0xC6, 0xAE, 0xD9, 0xB5,
+            0x34, 0x3C, 0x53, 0xEE, 0x2F, 0x43, 0x67, 0xCE
+        };
+
+        public void Initialize(byte[] sessionKey)
+        {
+            if (sessionKey == null || sessionKey.Length == 0)
+                throw new ArgumentException("Session key must not be empty", nameof(sessionKey));
+
+            byte[] encryptKey = ComputeHmac(ServerEncryptionKey, sessionKey);
+            byte[] decryptKey = ComputeHmac(ServerDecryptionKey, sessionKey);
+
+            _serverEncrypt = new SARC4();
+            _clientDecrypt = new SARC4();
+            _serverEncrypt.PrepareKey(encryptKey);
+            _clientDecrypt.PrepareKey(decryptKey);
+
+            // ARC4-drop1024 sync
+            byte[] drop = new byte[1024];
+            _serverEncrypt.ProcessBuffer(drop, drop.Length);
+            _clientDecrypt.ProcessBuffer(drop, drop.Length);
+
+            _isInitialized = true;
+        }
+
+        public void Decrypt(byte[] data, int len)
+        {
+            if (!_isInitialized || data == null || len <= 0)
+                return;
+
+            _clientDecrypt.ProcessBuffer(data, len);
+        }
+
+        public void Encrypt(byte[] data, int len)
+        {
+            if (!_isInitialized || data == null || len <= 0)
+                return;
+
+            _serverEncrypt.ProcessBuffer(data, len);
+        }
+
+        private static byte[] ComputeHmac(byte[] seed, byte[] sessionKey)
+        {
+            HmacHash hash = new HmacHash(seed);
+            hash.Finish(sessionKey, sessionKey.Length);
+            return hash.Digest;
+        }
+
+        bool _isInitialized;
+        SARC4 _serverEncrypt;
+        SARC4 _clientDecrypt;
+    }
 }

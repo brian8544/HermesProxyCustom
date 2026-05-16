@@ -18,16 +18,29 @@ namespace HermesProxy.World.Client
 
             InitializeFactions factions = new InitializeFactions();
             uint count = packet.ReadUInt32();
-            for (uint i = 0; i < count; i ++)
+            uint safeCount = Math.Min(count, (uint)factions.FactionFlags.Length);
+            for (uint i = 0; i < safeCount; i ++)
             {
                 factions.FactionFlags[i] = (ReputationFlags)packet.ReadUInt8();
                 factions.FactionStandings[i] = packet.ReadInt32();
             }
+
+            for (uint i = safeCount; i < count; ++i)
+            {
+                packet.ReadUInt8();
+                packet.ReadInt32();
+            }
+
             SendPacketToClient(factions);
 
             // This packet does not exist in Vanilla, but it must be sent for client to be able to move.
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
-                SendPacketToClient(new TimeSyncRequest());
+            {
+                if (IsWotlkFrontendClient())
+                    GetSession().InstanceSocket?.SendWotlkTimeSyncRequest("initial factions");
+                else
+                    SendPacketToClient(new TimeSyncRequest());
+            }
         }
 
         [PacketHandler(Opcode.SMSG_SET_FACTION_STANDING)]

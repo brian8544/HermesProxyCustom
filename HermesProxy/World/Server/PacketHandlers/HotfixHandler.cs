@@ -68,6 +68,7 @@ namespace HermesProxy.World.Server
                     {
                         //Log.PrintNet(LogType.Storage, LogNetDir.P2S, $"Item #{id} not cached, requesting server data...");
                         GetSession().GameState.RequestedItemHotfixes.Add(id);
+                        GetSession().GameState.PendingLegacyItemQueries.Enqueue(id);
                         WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
                         packet2.WriteUInt32(id);
                         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
@@ -89,6 +90,7 @@ namespace HermesProxy.World.Server
                               GetSession().WorldClient != null && GetSession().WorldClient.IsConnected())
                     {
                         GetSession().GameState.RequestedItemSparseHotfixes.Add(id);
+                        GetSession().GameState.PendingLegacyItemQueries.Enqueue(id);
                         //Log.PrintNet(LogType.Storage, LogNetDir.P2S, $"ItemSparse #{id} not cached, requesting server data...");
                         WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
                         packet2.WriteUInt32(id);

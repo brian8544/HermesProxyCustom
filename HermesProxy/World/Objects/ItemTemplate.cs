@@ -163,6 +163,10 @@ namespace HermesProxy.World.Objects
                 ScalingStatValue = packet.ReadUInt32();
             }
 
+            // Vanilla 1.12 item query responses still contain five damage triplets.
+            // WotLK client-facing item query packets only expose two, but the legacy
+            // backend packet must be consumed with its own layout first; otherwise
+            // armor/resists/delay/spell fields are shifted into bogus tooltip data.
             int dmgCount = LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767) ? 2 : 5;
             for (int i = 0; i < dmgCount; i++)
             {

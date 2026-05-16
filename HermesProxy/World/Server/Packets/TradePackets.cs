@@ -31,7 +31,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Guid = _worldPacket.ReadPackedGuid128();
+            Guid = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 Guid;
@@ -117,7 +119,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Coinage = _worldPacket.ReadUInt64();
+            Coinage = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? _worldPacket.ReadUInt32()
+                : _worldPacket.ReadUInt64();
         }
 
         public ulong Coinage;

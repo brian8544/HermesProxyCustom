@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -17,7 +17,9 @@
 
 
 using Framework.Constants;
+using Framework;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -25,15 +27,35 @@ using System.Collections.Generic;
 
 namespace HermesProxy.World.Server.Packets
 {
+    internal static class WotlkMovementPacketCompat
+    {
+        internal static bool IsWotlkFrontendBuild()
+        {
+            return Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340;
+        }
+
+        internal static WowGuid128 ReadPackedMoverGuid(WorldPacket packet)
+        {
+            if (!IsWotlkFrontendBuild())
+                return packet.ReadPackedGuid128();
+
+            return MovementInfo.LegacyPackedGuidTo128(packet.ReadPackedGuid());
+        }
+    }
+
     public class ClientPlayerMovement : ClientPacket
     {
         public ClientPlayerMovement(WorldPacket packet) : base(packet) { }
 
         public override void Read()
         {
-            Guid = _worldPacket.ReadPackedGuid128(); ;
+            Guid = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             MoveInfo = new MovementInfo();
-            MoveInfo.ReadMovementInfoModern(_worldPacket);
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+                MoveInfo.ReadMovementInfoWotlk(_worldPacket);
+            else
+                MoveInfo.ReadMovementInfoModern(_worldPacket);
         }
 
         public WowGuid128 Guid;
@@ -41,10 +63,18 @@ namespace HermesProxy.World.Server.Packets
     }
     public class MoveUpdate : ServerPacket
     {
-        public MoveUpdate() : base(Opcode.SMSG_MOVE_UPDATE, ConnectionType.Instance) { }
+        public MoveUpdate() : this(Opcode.SMSG_MOVE_UPDATE) { }
+        public MoveUpdate(Opcode opcode) : base(opcode, ConnectionType.Instance) { }
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                MoveInfo.WriteMovementInfoWotlk(_worldPacket);
+                return;
+            }
+
             MoveInfo.WriteMovementInfoModern(_worldPacket, MoverGUID);
         }
 
@@ -94,6 +124,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                WriteWotlk();
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteVector3(MoveSpline.StartPosition);
 
@@ -151,6 +187,86 @@ namespace HermesProxy.World.Server.Packets
             */
         }
 
+        private void WriteWotlk()
+        {
+            _worldPacket.WritePackedGuid(MoverGUID.To64());
+            _worldPacket.WriteUInt8(0); // toggles MOVEMENTFLAG2_UNK7 in 3.3.5 clients
+            _worldPacket.WriteVector3(MoveSpline.StartPosition);
+            _worldPacket.WriteUInt32(MoveSpline.SplineId);
+
+            if (Points.Count == 0 && PackedDeltas.Count == 0 && MoveSpline.SplineType == SplineTypeModern.None)
+            {
+                _worldPacket.WriteUInt8((byte)SplineTypeLegacy.Stop);
+                return;
+            }
+
+            switch (MoveSpline.SplineType)
+            {
+                case SplineTypeModern.FacingSpot:
+                    _worldPacket.WriteUInt8((byte)SplineTypeLegacy.FacingSpot);
+                    _worldPacket.WriteVector3(MoveSpline.FinalFacingSpot);
+                    break;
+                case SplineTypeModern.FacingTarget:
+                    _worldPacket.WriteUInt8((byte)SplineTypeLegacy.FacingTarget);
+                    _worldPacket.WriteGuid(MoveSpline.FinalFacingGuid.To64());
+                    break;
+                case SplineTypeModern.FacingAngle:
+                    _worldPacket.WriteUInt8((byte)SplineTypeLegacy.FacingAngle);
+                    _worldPacket.WriteFloat(MoveSpline.FinalOrientation);
+                    break;
+                default:
+                    _worldPacket.WriteUInt8((byte)SplineTypeLegacy.Normal);
+                    break;
+            }
+
+            SplineFlagWotLK splineFlags = BuildWotlkMonsterMoveFlags(MoveSpline.SplineFlags);
+
+            _worldPacket.WriteUInt32((uint)splineFlags);
+            _worldPacket.WriteUInt32(MoveSpline.SplineTimeFull);
+
+            if (splineFlags.HasAnyFlag(SplineFlagWotLK.CatmullRom))
+            {
+                _worldPacket.WriteUInt32((uint)Points.Count);
+                foreach (Vector3 pos in Points)
+                    _worldPacket.WriteVector3(pos);
+                return;
+            }
+
+            uint pointCount = (uint)(Points.Count + PackedDeltas.Count);
+            _worldPacket.WriteUInt32(pointCount);
+
+            Vector3 destination = Points.Count > 0
+                ? Points[0]
+                : MoveSpline.EndPosition;
+            _worldPacket.WriteVector3(destination);
+
+            foreach (Vector3 pos in PackedDeltas)
+                _worldPacket.WritePackXYZ(pos);
+        }
+
+        private static SplineFlagWotLK BuildWotlkMonsterMoveFlags(SplineFlagModern modernFlags)
+        {
+            SplineFlagWotLK flags = SplineFlagWotLK.None;
+
+            if (modernFlags.HasAnyFlag(SplineFlagModern.Falling))
+                flags |= SplineFlagWotLK.Falling;
+            if (modernFlags.HasAnyFlag(SplineFlagModern.Flying))
+                flags |= SplineFlagWotLK.Flying;
+            if (modernFlags.HasAnyFlag(SplineFlagModern.CatmullRom | SplineFlagModern.UncompressedPath))
+                flags |= SplineFlagWotLK.CatmullRom;
+            if (modernFlags.HasAnyFlag(SplineFlagModern.Cyclic))
+                flags |= SplineFlagWotLK.Cyclic;
+            if (modernFlags.HasAnyFlag(SplineFlagModern.TransportEnter))
+                flags |= SplineFlagWotLK.Transport;
+            if (modernFlags.HasAnyFlag(SplineFlagModern.TransportExit))
+                flags |= SplineFlagWotLK.TransportExit;
+
+            if (flags.HasAnyFlag(SplineFlagWotLK.Cyclic | SplineFlagWotLK.Flying))
+                flags |= SplineFlagWotLK.EnterCycle;
+
+            return flags;
+        }
+
         public WowGuid128 MoverGUID;
         public ServerSideMovement MoveSpline;
         public List<Vector3> Points = new();
@@ -163,7 +279,7 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            MoverGUID = _worldPacket.ReadPackedGuid128();
+            MoverGUID = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             MoveCounter = _worldPacket.ReadUInt32();
             MoveTime = _worldPacket.ReadUInt32();
         }
@@ -175,10 +291,49 @@ namespace HermesProxy.World.Server.Packets
 
     public class MoveTeleport : ServerPacket
     {
-        public MoveTeleport() : base(Opcode.SMSG_MOVE_TELEPORT, ConnectionType.Instance) { }
+        public MoveTeleport() : base(GetMoveTeleportOpcode(), ConnectionType.Instance) { }
+
+        private static Opcode GetMoveTeleportOpcode()
+        {
+            // 3.3.5 uses MSG_MOVE_TELEPORT (no SMSG alias), while newer builds
+            // may expose SMSG_MOVE_TELEPORT. Select whichever exists.
+            return ModernVersion.GetCurrentOpcode(Opcode.SMSG_MOVE_TELEPORT) != 0
+                ? Opcode.SMSG_MOVE_TELEPORT
+                : Opcode.MSG_MOVE_TELEPORT;
+        }
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // 3.3.5 MSG_MOVE_TELEPORT_Server is not the modern teleport
+                // packet shape. It is the normal movement-msg body:
+                // PackedGuid + MovementInfo. Reusing the Legion/Classic-era
+                // packed128/vector/bit payload makes the Wrath client ignore or
+                // misapply the correction and produces rubber-banding.
+                MovementInfo moveInfo = MoveInfo ?? new MovementInfo
+                {
+                    MoveTime = MoveCounter,
+                    Position = Position,
+                    Orientation = Orientation,
+                    TransportGuid = TransportGUID,
+                    TransportSeat = Vehicle != null ? Vehicle.VehicleSeatIndex : (sbyte)-1,
+                    WalkSpeed = MovementInfo.DEFAULT_WALK_SPEED,
+                    RunSpeed = MovementInfo.DEFAULT_RUN_SPEED,
+                    RunBackSpeed = MovementInfo.DEFAULT_RUN_BACK_SPEED,
+                    SwimSpeed = MovementInfo.DEFAULT_SWIM_SPEED,
+                    SwimBackSpeed = MovementInfo.DEFAULT_SWIM_BACK_SPEED,
+                    FlightSpeed = MovementInfo.DEFAULT_FLY_SPEED,
+                    FlightBackSpeed = MovementInfo.DEFAULT_FLY_BACK_SPEED,
+                    TurnRate = MovementInfo.DEFAULT_TURN_RATE,
+                    PitchRate = MovementInfo.DEFAULT_PITCH_RATE
+                };
+
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                moveInfo.WriteMovementInfoWotlk(_worldPacket);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteUInt32(MoveCounter);
             _worldPacket.WriteVector3(Position);
@@ -201,6 +356,7 @@ namespace HermesProxy.World.Server.Packets
                 _worldPacket.WritePackedGuid128(TransportGUID);
         }
 
+        public MovementInfo MoveInfo;
         public Vector3 Position;
         public VehicleTeleport Vehicle;
         public uint MoveCounter;
@@ -305,6 +461,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                _worldPacket.WriteFloat(Speed);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteFloat(Speed);
         }
@@ -320,6 +483,16 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                _worldPacket.WriteUInt32(MoveCounter);
+                if (GetUniversalOpcode() == Opcode.SMSG_FORCE_RUN_SPEED_CHANGE)
+                    _worldPacket.WriteUInt8(0);
+                _worldPacket.WriteFloat(Speed);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteUInt32(MoveCounter);
             _worldPacket.WriteFloat(Speed);
@@ -336,7 +509,7 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            MoverGUID = _worldPacket.ReadPackedGuid128();
+            MoverGUID = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             Ack.Read(_worldPacket);
             Speed = _worldPacket.ReadFloat();
         }
@@ -351,6 +524,14 @@ namespace HermesProxy.World.Server.Packets
         public void Read(WorldPacket data)
         {
             MoveInfo = new();
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                MoveCounter = data.ReadUInt32();
+                MoveInfo.ReadMovementInfoWotlk(data);
+                return;
+            }
+
             MoveInfo.ReadMovementInfoModern(data);
             MoveCounter = data.ReadUInt32();
         }
@@ -366,6 +547,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                MoveInfo.WriteMovementInfoWotlk(_worldPacket);
+                _worldPacket.WriteFloat(Speed);
+                return;
+            }
+
             MoveInfo.WriteMovementInfoModern(_worldPacket, MoverGUID);
             _worldPacket.WriteFloat(Speed);
         }
@@ -381,6 +570,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
         }
 
@@ -393,6 +588,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                _worldPacket.WriteUInt32(MoveCounter);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteUInt32(MoveCounter);
         }
@@ -407,12 +609,38 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            MoverGUID = _worldPacket.ReadPackedGuid128();
+            Opcode opcode = GetUniversalOpcode();
+            MoverGUID = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             Ack.Read(_worldPacket);
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild() && HasWotlkAppliedState(opcode))
+            {
+                if (GetRemainingBytes(_worldPacket) >= sizeof(int))
+                {
+                    AppliedState = _worldPacket.ReadInt32();
+                    HasAppliedState = true;
+                }
+            }
+        }
+
+        private static bool HasWotlkAppliedState(Opcode opcode)
+        {
+            return opcode is Opcode.CMSG_MOVE_WATER_WALK_ACK
+                or Opcode.CMSG_MOVE_FEATHER_FALL_ACK
+                or Opcode.CMSG_MOVE_HOVER_ACK
+                or Opcode.CMSG_MOVE_SET_CAN_FLY_ACK;
+        }
+
+        private static long GetRemainingBytes(WorldPacket packet)
+        {
+            var stream = packet.GetCurrentStream();
+            return stream.Length - stream.Position;
         }
 
         public WowGuid128 MoverGUID;
         public MovementAck Ack;
+        public bool HasAppliedState;
+        public int AppliedState;
     }
 
     class MoveSetCollisionHeight : ServerPacket
@@ -452,6 +680,16 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                _worldPacket.WriteUInt32(MoveCounter);
+                _worldPacket.WriteVector2(Direction);
+                _worldPacket.WriteFloat(HorizontalSpeed);
+                _worldPacket.WriteFloat(VerticalSpeed);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(MoverGUID);
             _worldPacket.WriteUInt32(MoveCounter);
             _worldPacket.WriteVector2(Direction);
@@ -468,10 +706,22 @@ namespace HermesProxy.World.Server.Packets
 
     public class MoveUpdateKnockBack : ServerPacket
     {
-        public MoveUpdateKnockBack() : base(Opcode.SMSG_MOVE_UPDATE_KNOCK_BACK) { }
+        public MoveUpdateKnockBack() : this(Opcode.SMSG_MOVE_UPDATE_KNOCK_BACK) { }
+        public MoveUpdateKnockBack(Opcode opcode) : base(opcode, ConnectionType.Instance) { }
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(MoverGUID.To64());
+                MoveInfo.WriteMovementInfoWotlk(_worldPacket);
+                _worldPacket.WriteFloat(MoveInfo.JumpSinAngle);
+                _worldPacket.WriteFloat(MoveInfo.JumpCosAngle);
+                _worldPacket.WriteFloat(MoveInfo.JumpHorizontalSpeed);
+                _worldPacket.WriteFloat(MoveInfo.JumpVerticalSpeed);
+                return;
+            }
+
             MoveInfo.WriteMovementInfoModern(_worldPacket, MoverGUID);
         }
 
@@ -515,6 +765,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                _worldPacket.WritePackedGuid(Guid.To64());
+                _worldPacket.WriteUInt8(HasControl ? (byte)1 : (byte)0);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(Guid);
             _worldPacket.WriteBit(HasControl);
             _worldPacket.FlushBits();
@@ -530,7 +787,10 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            MoverGUID = _worldPacket.ReadPackedGuid128();
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+                MoverGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+            else
+                MoverGUID = _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 MoverGUID;
@@ -554,9 +814,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Guid = _worldPacket.ReadPackedGuid128();
+            Guid = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             MoveInfo = new();
-            MoveInfo.ReadMovementInfoModern(_worldPacket);
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+                MoveInfo.ReadMovementInfoWotlk(_worldPacket);
+            else
+                MoveInfo.ReadMovementInfoModern(_worldPacket);
+
             SplineID = _worldPacket.ReadInt32();
         }
 
@@ -570,7 +835,7 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            MoverGUID = _worldPacket.ReadPackedGuid128();
+            MoverGUID = WotlkMovementPacketCompat.ReadPackedMoverGuid(_worldPacket);
             TimeSkipped = _worldPacket.ReadUInt32();
         }
 

@@ -44,6 +44,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                VendorGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                Slot = _worldPacket.ReadUInt32();
+                return;
+            }
+
             VendorGUID = _worldPacket.ReadPackedGuid128();
             Slot = _worldPacket.ReadUInt32();
         }
@@ -61,6 +68,41 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                VendorGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                Item.ItemID = _worldPacket.ReadUInt32();
+
+                long remaining = _worldPacket.GetCurrentStream().Length - _worldPacket.GetCurrentStream().Position;
+                if (remaining >= 12)
+                {
+                    Slot = _worldPacket.ReadUInt32();
+                    Quantity = _worldPacket.ReadUInt32();
+                    BagSlot = _worldPacket.ReadUInt32();
+                }
+                else if (remaining >= 9)
+                {
+                    Slot = _worldPacket.ReadUInt32();
+                    Quantity = _worldPacket.ReadUInt32();
+                    BagSlot = _worldPacket.ReadUInt8();
+                }
+                else if (remaining >= 8)
+                {
+                    Slot = _worldPacket.ReadUInt32();
+                    Quantity = _worldPacket.ReadUInt32();
+                    BagSlot = 0;
+                }
+                else
+                {
+                    Slot = 0;
+                    Quantity = 1;
+                    BagSlot = 0;
+                }
+
+                ItemType = ItemVendorType.Item;
+                return;
+            }
+
             VendorGUID = _worldPacket.ReadPackedGuid128();
             ContainerGUID = _worldPacket.ReadPackedGuid128();
             Quantity = _worldPacket.ReadUInt32();
@@ -176,6 +218,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                VendorGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                ItemGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                Amount = _worldPacket.CanRead() ? _worldPacket.ReadUInt32() : 0;
+                return;
+            }
+
             VendorGUID = _worldPacket.ReadPackedGuid128();
             ItemGUID = _worldPacket.ReadPackedGuid128();
             Amount = _worldPacket.ReadUInt32();
@@ -230,6 +280,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                Slot2 = _worldPacket.ReadUInt8();
+                Slot1 = _worldPacket.ReadUInt8();
+                return;
+            }
+
             Inv = new InvUpdate(_worldPacket);
             Slot2 = _worldPacket.ReadUInt8();
             Slot1 = _worldPacket.ReadUInt8();
@@ -246,6 +303,16 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // Wrath 3.3.5 sends four plain bytes here; no InvUpdate bitfield.
+                ContainerSlotB = _worldPacket.ReadUInt8();
+                SlotB = _worldPacket.ReadUInt8();
+                ContainerSlotA = _worldPacket.ReadUInt8();
+                SlotA = _worldPacket.ReadUInt8();
+                return;
+            }
+
             Inv = new InvUpdate(_worldPacket);
             ContainerSlotB = _worldPacket.ReadUInt8();
             ContainerSlotA = _worldPacket.ReadUInt8();
@@ -266,6 +333,15 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // Wrath 3.3.5 CMSG_AUTO_EQUIP_ITEM is source bag + source slot
+                // in the legacy opcode family; it does not include InvUpdate.
+                PackSlot = _worldPacket.ReadUInt8();
+                Slot = _worldPacket.ReadUInt8();
+                return;
+            }
+
             Inv = new InvUpdate(_worldPacket);
             PackSlot = _worldPacket.ReadUInt8();
             Slot = _worldPacket.ReadUInt8();
@@ -282,6 +358,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                Item = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                ItemDstSlot = _worldPacket.ReadUInt8();
+                return;
+            }
+
             Inv = new InvUpdate(_worldPacket);
             Item = _worldPacket.ReadPackedGuid128();
             ItemDstSlot = _worldPacket.ReadUInt8();
@@ -546,6 +629,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                VendorGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                ItemGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                UseGuildBank = _worldPacket.CanRead() && _worldPacket.ReadBool();
+                return;
+            }
+
             VendorGUID = _worldPacket.ReadPackedGuid128();
             ItemGUID = _worldPacket.ReadPackedGuid128();
             UseGuildBank = _worldPacket.HasBit();

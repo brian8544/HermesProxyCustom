@@ -32,7 +32,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            CreatureGUID = _worldPacket.ReadPackedGuid128();
+            CreatureGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 CreatureGUID;
@@ -164,9 +166,16 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            GossipUnit = _worldPacket.ReadPackedGuid128();
-            GossipID = _worldPacket.ReadUInt32();
-            GossipIndex = _worldPacket.ReadUInt32();
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+                GossipUnit = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+            else
+                GossipUnit = _worldPacket.ReadPackedGuid128();
+
+            GossipID = _worldPacket.CanRead() ? _worldPacket.ReadUInt32() : 0;
+            GossipIndex = _worldPacket.CanRead() ? _worldPacket.ReadUInt32() : GossipID;
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild() || !_worldPacket.CanRead())
+                return;
 
             uint length = _worldPacket.ReadBits<uint>(8);
             PromotionCode = _worldPacket.ReadString(length);
@@ -274,7 +283,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Guid = _worldPacket.ReadPackedGuid128();
+            Guid = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 Guid;
@@ -334,6 +345,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                TrainerGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                SpellID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             TrainerGUID = _worldPacket.ReadPackedGuid128();
             TrainerID = _worldPacket.ReadUInt32();
             SpellID = _worldPacket.ReadUInt32();
@@ -382,7 +400,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            TrainerGUID = _worldPacket.ReadPackedGuid128();
+            TrainerGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
             RespecType = (SpecResetType)_worldPacket.ReadUInt8();
         }
 

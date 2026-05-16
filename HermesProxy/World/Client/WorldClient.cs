@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Net;
@@ -15,6 +15,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using Framework.Networking;
 using HermesProxy.World.Server;
+using HermesProxy.World.Server.Packets;
 
 namespace HermesProxy.World.Client
 {
@@ -29,6 +30,9 @@ namespace HermesProxy.World.Client
         Dictionary<Opcode, Action<WorldPacket>> _packetHandlers;
         GlobalSessionData _globalSession;
         System.Threading.Mutex _sendMutex = new System.Threading.Mutex();
+        bool _expectingBackendDisconnectAfterLogout;
+        static readonly TimeSpan BackendWorldAuthTimeout = TimeSpan.FromSeconds(15);
+        const int BackendWorldAuthPollDelayMs = 10;
 
         // packet order is not always the same as new client, sometimes we need to delay packet until another one
         Dictionary<Opcode, List<WorldPacket>> _delayedPacketsToServer;
@@ -55,6 +59,7 @@ namespace HermesProxy.World.Client
             _isSuccessful = null;
             _delayedPacketsToServer = new Dictionary<Opcode, List<WorldPacket>>();
             _delayedPacketsToClient = new Dictionary<Opcode, List<ServerPacket>>();
+            _expectingBackendDisconnectAfterLogout = false;
 
             Log.Print(LogType.Network, "Connecting to world server...");
             try
@@ -95,6 +100,9 @@ namespace HermesProxy.World.Client
                 case ClientVersionBuild.V2_4_3_8606:
                     _worldCrypt = new TbcWorldCrypt();
                     break;
+                case ClientVersionBuild.V3_3_5a_12340:
+                    _worldCrypt = new WotlkWorldCrypt();
+                    break;
             }
 
             if (_worldCrypt != null)
@@ -103,14 +111,74 @@ namespace HermesProxy.World.Client
 
         public void Disconnect()
         {
-            if (!IsConnected())
+            Socket socket = _clientSocket;
+            _clientSocket = null;
+
+            if (socket != null)
+            {
+                try
+                {
+                    if (socket.Connected)
+                        socket.Shutdown(SocketShutdown.Both);
+                }
+                catch
+                {
+                    // The peer may already have disappeared. Closing below is enough
+                    // to make the legacy world server release the character.
+                }
+
+                try
+                {
+                    socket.Close();
+                }
+                catch
+                {
+                    // Ignore close races during disconnect cleanup.
+                }
+            }
+
+            if (GetSession()?.WorldClient == this)
+                GetSession().WorldClient = null;
+        }
+
+        public void RequestLogoutBeforeDisconnect(string reason)
+        {
+            Socket socket = _clientSocket;
+            if (socket == null || _isSuccessful != true)
                 return;
 
-            _clientSocket.Shutdown(SocketShutdown.Both);
-            _clientSocket.Disconnect(false);
+            try
+            {
+                Log.Print(LogType.Network, $"Requesting legacy logout before backend socket close ({reason}).");
+                SendPacket(new WorldPacket(Opcode.CMSG_LOGOUT_REQUEST));
+            }
+            catch (Exception ex)
+            {
+                Log.Print(LogType.Debug, $"Unable to send legacy logout request during disconnect cleanup: {ex.Message}");
+            }
+        }
 
-            if (GetSession().WorldClient == this)
-                GetSession().WorldClient = null;
+        public void ForceLogoutBeforeDisconnect(string reason)
+        {
+            Socket socket = _clientSocket;
+            if (socket == null || _isSuccessful != true)
+                return;
+
+            try
+            {
+                Log.Print(LogType.Network, $"Forcing legacy logout before backend socket close ({reason}).");
+
+                // Single-user WotLK frontend mode: if the frontend disappears, do not
+                // keep the vanilla world session around waiting for normal logout state.
+                // Send both logout stages, then close the backend socket so MaNGOS frees
+                // the character instead of leaving it stuck as already logged in.
+                SendPacket(new WorldPacket(Opcode.CMSG_LOGOUT_REQUEST));
+                SendPacket(new WorldPacket(Opcode.CMSG_PLAYER_LOGOUT));
+            }
+            catch (Exception ex)
+            {
+                Log.Print(LogType.Debug, $"Unable to send forced legacy logout packets during disconnect cleanup: {ex.Message}");
+            }
         }
 
         public bool IsConnected()
@@ -147,8 +215,12 @@ namespace HermesProxy.World.Client
             int alreadyReceived = 0;
             while (alreadyReceived < bufferToFill.Count)
             {
+                Socket socket = _clientSocket;
+                if (socket == null)
+                    return false;
+
                 var tmpArrayBuffer = new ArraySegment<byte>(bufferToFill.Array!, alreadyReceived + bufferToFill.Offset, bufferToFill.Count - alreadyReceived);
-                int receive = await _clientSocket.ReceiveAsync(tmpArrayBuffer, SocketFlags.None);
+                int receive = await socket.ReceiveAsync(tmpArrayBuffer, SocketFlags.None);
                 if (receive == 0)
                     return false;
                 alreadyReceived += receive;
@@ -170,7 +242,12 @@ namespace HermesProxy.World.Client
                         if (_isSuccessful == null)
                             _isSuccessful = false;
                         else if (GetSession().WorldClient == this)
-                            GetSession().OnDisconnect();
+                        {
+                            if (ShouldKeepFrontendAliveAfterBackendDisconnect())
+                                HandleExpectedBackendDisconnectAfterLogout();
+                            else
+                                GetSession().OnDisconnect();
+                        }
                         return;
                     }
 
@@ -195,7 +272,12 @@ namespace HermesProxy.World.Client
                             if (_isSuccessful == null)
                                 _isSuccessful = false;
                             else if (GetSession().WorldClient == this)
-                                GetSession().OnDisconnect();
+                            {
+                                if (ShouldKeepFrontendAliveAfterBackendDisconnect())
+                                    HandleExpectedBackendDisconnectAfterLogout();
+                                else
+                                    GetSession().OnDisconnect();
+                            }
                             return;
                         }
 
@@ -203,6 +285,25 @@ namespace HermesProxy.World.Client
                         packet.SetReceiveTime(Environment.TickCount);
                         HandlePacket(packet);
                     }
+                }
+            }
+            catch (SocketException se) when (
+                se.SocketErrorCode == SocketError.Shutdown ||
+                se.SocketErrorCode == SocketError.OperationAborted ||
+                se.SocketErrorCode == SocketError.ConnectionReset ||
+                se.SocketErrorCode == SocketError.ConnectionAborted ||
+                se.SocketErrorCode == SocketError.NotConnected)
+            {
+                Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Backend socket closed ({se.SocketErrorCode}).");
+                if (_isSuccessful == null)
+                    _isSuccessful = false;
+                else
+                {
+                    Disconnect();
+                    if (ShouldKeepFrontendAliveAfterBackendDisconnect())
+                        HandleExpectedBackendDisconnectAfterLogout();
+                    else
+                        GetSession().OnDisconnect();
                 }
             }
             catch(Exception e)
@@ -213,7 +314,10 @@ namespace HermesProxy.World.Client
                 else
                 {
                     Disconnect();
-                    GetSession().OnDisconnect();
+                    if (ShouldKeepFrontendAliveAfterBackendDisconnect())
+                        HandleExpectedBackendDisconnectAfterLogout();
+                    else
+                        GetSession().OnDisconnect();
                 }
             }
         }
@@ -241,7 +345,11 @@ namespace HermesProxy.World.Client
 
                 buffer.WriteBytes(packet.GetData(), packet.GetSize());
 
-                _clientSocket.Send(buffer.GetData(), SocketFlags.None);
+                Socket socket = _clientSocket;
+                if (socket == null)
+                    throw new SocketException((int)SocketError.NotConnected);
+
+                socket.Send(buffer.GetData(), SocketFlags.None);
             }
             catch (Exception ex)
             {
@@ -368,7 +476,9 @@ namespace HermesProxy.World.Client
         private void HandlePacket(WorldPacket packet)
         {
             Opcode universalOpcode = packet.GetUniversalOpcode(false);
-            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Received opcode {universalOpcode} ({packet.GetOpcode()}).");
+            // Suppress extremely chatty movement spline updates in debug logs.
+            if (universalOpcode != Opcode.SMSG_ON_MONSTER_MOVE)
+                Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Received opcode {universalOpcode} ({packet.GetOpcode()}).");
 
             switch (universalOpcode)
             {
@@ -381,15 +491,34 @@ namespace HermesProxy.World.Client
                 case Opcode.SMSG_ADDON_INFO:
                     break; // don't need to handle
                 default:
+                    if (IsWotlkFrontendClient() && packet.GetOpcode() == 0x021E)
+                    {
+                        if (TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_SET_REST_START))
+                            break;
+                    }
+
                     if (_packetHandlers.ContainsKey(universalOpcode))
                     {
                         _packetHandlers[universalOpcode](packet);
                     }
                     else
                     {
-                        Log.PrintNet(LogType.Warn, LogNetDir.S2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from WorldServer)");
-                        if (_isSuccessful == null)
-                            _isSuccessful = false;
+                        if (IsWotlkFrontendClient() && ShouldDropUnhandledRawWotlkOpcode(universalOpcode))
+                        {
+                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"[WotLK] Dropped unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
+                            break;
+                        }
+
+                        if (IsWotlkFrontendClient() && TryForwardLegacyPayloadToWotlkClient(packet))
+                        {
+                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"[WotLK] Raw-forwarded unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
+                        }
+                        else
+                        {
+                            Log.PrintNet(LogType.Warn, LogNetDir.S2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from WorldServer)");
+                            if (_isSuccessful == null)
+                                _isSuccessful = false;
+                        }
                     }
                     break;
             }
@@ -423,6 +552,15 @@ namespace HermesProxy.World.Client
         public void SendAuthResponse(uint clientSeed, uint serverSeed)
         {
             uint zero = 0;
+            byte[] sessionKey = GetSession().AuthClient != null
+                ? GetSession().AuthClient.GetSessionKey()
+                : GetSession().SessionKey;
+            if (sessionKey == null || sessionKey.Length == 0)
+            {
+                Log.Print(LogType.Error, "WorldClient.SendAuthResponse(): missing session key.");
+                _isSuccessful = false;
+                return;
+            }
 
             byte[] authResponse = HashAlgorithm.SHA1.Hash
             (
@@ -430,7 +568,7 @@ namespace HermesProxy.World.Client
                 BitConverter.GetBytes(zero),
                 BitConverter.GetBytes(clientSeed),
                 BitConverter.GetBytes(serverSeed),
-                GetSession().AuthClient.GetSessionKey()
+                sessionKey
             );
 
             WorldPacket packet = new WorldPacket(Opcode.CMSG_AUTH_SESSION);
@@ -461,7 +599,7 @@ namespace HermesProxy.World.Client
 
             SendPacket(packet);
 
-            InitializeEncryption(GetSession().AuthClient.GetSessionKey());
+            InitializeEncryption(sessionKey);
         }
 
         private void HandleAuthResponse(WorldPacket packet)
@@ -554,6 +692,116 @@ namespace HermesProxy.World.Client
                     _packetHandlers[msgAttr.Opcode] = del;
                 }
             }
+
+            if (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                Opcode legacyRest = LegacyVersion.GetUniversalOpcode(542);
+                Opcode legacyMonsterMove = LegacyVersion.GetUniversalOpcode(221);
+
+                Log.Print(LogType.Debug, $"[WotLK] Legacy opcode 542 maps to {legacyRest}; handler registered: {_packetHandlers.ContainsKey(legacyRest)}");
+                Log.Print(LogType.Debug, $"[WotLK] Legacy opcode 221 maps to {legacyMonsterMove}; handler registered: {_packetHandlers.ContainsKey(legacyMonsterMove)}");
+            }
+        }
+    }    public partial class WorldClient
+    {
+private static readonly HashSet<Opcode> WotlkRawForwardDenyList = new()
+        {
+            // Optional/auxiliary responses that have version-fragile payloads between 1.12 and 3.3.5a.
+            // Dropping these in WotLK-frontend mode is safer than blind passthrough.
+            Opcode.SMSG_EXPECTED_SPAM_RECORDS,
+            Opcode.SMSG_GM_TICKET_GET_TICKET,
+            Opcode.SMSG_GM_TICKET_GET_TICKET_RESPONSE,
+            // Cinematic/movie triggers and spell visual casts are frequent crash points while
+            // update-object conversion is still being stabilized for 3.3.5a.
+            Opcode.SMSG_TRIGGER_CINEMATIC,
+            Opcode.SMSG_TRIGGER_MOVIE,
+            Opcode.SMSG_SPELL_START,
+            Opcode.SMSG_SPELL_GO,
+        };
+
+        private bool IsWotlkFrontendClient()
+        {
+            return Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340;
+        }
+
+        private bool ShouldKeepFrontendAliveAfterBackendDisconnect()
+        {
+            return IsWotlkFrontendClient() && _expectingBackendDisconnectAfterLogout;
+        }
+
+        private void HandleExpectedBackendDisconnectAfterLogout()
+        {
+            _expectingBackendDisconnectAfterLogout = false;
+            if (GetSession().WorldClient == this)
+                GetSession().WorldClient = null;
+
+            if (GetSession().GameState != null)
+                GetSession().GameState.IsConnectedToInstance = false;
+        }
+
+        private bool IsCurrentPlayerGuid(WowGuid128 guid)
+        {
+            WowGuid128 current = GetSession().GameState.CurrentPlayerGuid;
+            if (guid.IsEmpty() || current.IsEmpty())
+                return false;
+
+            return guid.To64().GetLowValue() == current.To64().GetLowValue();
+        }
+
+        private static bool ShouldDropUnhandledRawWotlkOpcode(Opcode opcode)
+        {
+            return WotlkRawForwardDenyList.Contains(opcode);
+        }
+
+        private bool TryForwardLegacyPayloadToWotlkClient(WorldPacket legacyPacket, Opcode forcedOpcode = Opcode.MSG_NULL_ACTION, byte[] payloadOverride = null)
+        {
+            if (!IsWotlkFrontendClient())
+                return false;
+
+            Opcode opcode = forcedOpcode == Opcode.MSG_NULL_ACTION
+                ? legacyPacket.GetUniversalOpcode(false)
+                : forcedOpcode;
+
+            if (opcode == Opcode.MSG_NULL_ACTION || ModernVersion.GetCurrentOpcode(opcode) == 0)
+                return false;
+
+            byte[] payload = payloadOverride ?? ExtractLegacyPayload(legacyPacket);
+            SendPacketToClient(new RawServerPacket(opcode, ConnectionType.Instance, payload));
+            return true;
+        }
+
+        private static byte[] ExtractLegacyPayload(WorldPacket legacyPacket)
+        {
+            byte[] source = legacyPacket.GetData();
+            if (source == null || source.Length == 0)
+                return Array.Empty<byte>();
+
+            int payloadOffset = 0;
+            if (source.Length >= sizeof(ushort) &&
+                BitConverter.ToUInt16(source, 0) == legacyPacket.GetOpcode())
+            {
+                payloadOffset = sizeof(ushort);
+            }
+
+            if (source.Length <= payloadOffset)
+                return Array.Empty<byte>();
+
+            int payloadSize = source.Length - payloadOffset;
+            byte[] payload = new byte[payloadSize];
+            Buffer.BlockCopy(source, payloadOffset, payload, 0, payloadSize);
+            return payload;
+        }
+
+        private static byte[] PatchLoginSetTimeSpeedPayloadForWotlk(byte[] legacyPayload)
+        {
+            if (legacyPayload == null || legacyPayload.Length != sizeof(uint) + sizeof(float))
+                return legacyPayload ?? Array.Empty<byte>();
+
+            byte[] patched = new byte[sizeof(uint) + sizeof(float) + sizeof(uint)];
+            Buffer.BlockCopy(legacyPayload, 0, patched, 0, legacyPayload.Length);
+            // Wrath adds one extra u32 field after timescale; vanilla doesn't provide it.
+            // Keep it zero-initialized.
+            return patched;
         }
     }
 }

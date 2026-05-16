@@ -13,6 +13,9 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_SET_PROFICIENCY)]
         void HandleSetProficiency(WorldPacket packet)
         {
+            if (TryForwardLegacyPayloadToWotlkClient(packet))
+                return;
+
             SetProficiency proficiency = new SetProficiency();
             proficiency.ProficiencyClass = packet.ReadUInt8();
             proficiency.ProficiencyMask = packet.ReadUInt32();

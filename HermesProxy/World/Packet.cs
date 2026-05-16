@@ -20,8 +20,9 @@ using Framework.Constants;
 using System;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Client;
-using Ionic.Zlib;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
 
 namespace HermesProxy.World
 {
@@ -215,19 +216,19 @@ namespace HermesProxy.World
             var arr = ReadToEnd();
             var newarr = new byte[inflatedSize];
 
-            var stream = new ZlibCodec(Ionic.Zlib.CompressionMode.Decompress)
+            using (var compressedStream = new MemoryStream(arr))
+            using (var decompressionStream = new ZLibStream(compressedStream, CompressionMode.Decompress))
             {
-                InputBuffer = arr,
-                NextIn = 0,
-                AvailableBytesIn = arr.Length,
-                OutputBuffer = newarr,
-                NextOut = 0,
-                AvailableBytesOut = inflatedSize
-            };
+                int written = 0;
+                while (written < inflatedSize)
+                {
+                    int read = decompressionStream.Read(newarr, written, inflatedSize - written);
+                    if (read <= 0)
+                        break;
 
-            stream.Inflate(FlushType.None);
-            stream.Inflate(FlushType.Finish);
-            stream.EndInflate();
+                    written += read;
+                }
+            }
 
             // Cannot use "using" here
             var pkt = new WorldPacket(GetOpcode(), newarr);

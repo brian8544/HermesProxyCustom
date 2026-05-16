@@ -34,6 +34,19 @@ namespace HermesProxy.World.Server.Packets
         }
     }
 
+
+    public class ZoneUpdate : ClientPacket
+    {
+        public ZoneUpdate(WorldPacket packet) : base(packet) { }
+
+        public uint ZoneID;
+
+        public override void Read()
+        {
+            ZoneID = _worldPacket.ReadUInt32();
+        }
+    }
+
     public class BindPointUpdate : ServerPacket
     {
         public BindPointUpdate() : base(Opcode.SMSG_BIND_POINT_UPDATE, ConnectionType.Instance) { }
@@ -290,8 +303,10 @@ namespace HermesProxy.World.Server.Packets
         public override void Read()
         {
             AreaTriggerID = _worldPacket.ReadUInt32();
-            Entered = _worldPacket.HasBit();
-            FromClient = _worldPacket.HasBit();
+            // Legacy backend handler only expects trigger id in this packet layout.
+            // Consuming extra bits here can desync following packets.
+            Entered = true;
+            FromClient = true;
         }
 
         public uint AreaTriggerID;
@@ -317,7 +332,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            TargetGUID = _worldPacket.ReadPackedGuid128();
+            TargetGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 TargetGUID;
@@ -444,7 +461,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Player = _worldPacket.ReadPackedGuid128();
+            if (!_worldPacket.CanRead())
+                return;
+
+            Player = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 Player;
@@ -494,7 +516,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            CorpseGUID = _worldPacket.ReadPackedGuid128();
+            CorpseGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 CorpseGUID;

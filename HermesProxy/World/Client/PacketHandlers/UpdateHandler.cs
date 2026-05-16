@@ -1,4 +1,4 @@
-﻿//#define DEBUG_UPDATES
+//#define DEBUG_UPDATES
 
 using Framework.GameMath;
 using Framework.Logging;
@@ -27,6 +27,20 @@ namespace HermesProxy.World.Client
             GetSession().GameState.ObjectCacheMutex.ReleaseMutex();
             GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
 
+            if (IsWotlkFrontendClient())
+            {
+                // Keep the Wrath-side created-object set in sync.  A later
+                // VALUES-only update for a destroyed/missing object can crash
+                // 3.3.5a with a null object pointer.
+                GetSession().GameState.WotlkClientKnownObjectGuids.Remove(guid);
+
+                WorldPacket payload = new();
+                payload.WriteGuid(guid.To64());
+                payload.WriteUInt8(0); // onDeath
+                TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_DESTROY_OBJECT, payload.GetData());
+                return;
+            }
+
             UpdateObject updateObject = new UpdateObject(GetSession().GameState);
             updateObject.DestroyedGuids.Add(guid);
             SendPacketToClient(updateObject);
@@ -35,7 +49,9 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_COMPRESSED_UPDATE_OBJECT)]
         void HandleCompressedUpdateObject(WorldPacket packet)
         {
-            using (var packet2 = packet.Inflate(packet.ReadInt32()))
+            int inflatedSize = packet.ReadInt32();
+            Log.Print(LogType.Debug, $"[UpdateHandler] Received SMSG_COMPRESSED_UPDATE_OBJECT inflatedSize={inflatedSize}.");
+            using (var packet2 = packet.Inflate(inflatedSize))
             {
                 HandleUpdateObject(packet2);
             }
@@ -45,6 +61,7 @@ namespace HermesProxy.World.Client
         void HandleUpdateObject(WorldPacket packet)
         {
             var count = packet.ReadUInt32();
+            Log.Print(LogType.Debug, $"[UpdateHandler] Begin HandleUpdateObject blocks={count}.");
             PrintString($"Updates Count = {count}");
 
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
@@ -119,8 +136,27 @@ namespace HermesProxy.World.Client
                         AuraUpdate auraUpdate = new AuraUpdate(guid, true);
                         ReadCreateObjectBlock(packet, guid, updateData, auraUpdate, i);
 
+                        // WotLK frontend expects self player creates as CreateObject2 in many login flows.
+                        // Some legacy streams still flag self inside a CreateObject1 block; promote after parse.
+                        if (ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340 &&
+                            updateData.CreateData?.ThisIsYou == true)
+                        {
+                            updateData.Type = UpdateTypeModern.CreateObject2;
+                        }
+
                         if (updateData.Guid == GetSession().GameState.CurrentPlayerGuid)
+                        {
                             GetSession().GameState.CurrentPlayerStorage.CompletedQuests.WriteAllCompletedIntoArray(updateData.ActivePlayerData.QuestCompleted);
+                            if (updateData.CreateData?.MoveInfo != null)
+                            {
+                                GetSession().GameState.CurrentPlayerPosition = new Framework.GameMath.Position(
+                                    updateData.CreateData.MoveInfo.Position.X,
+                                    updateData.CreateData.MoveInfo.Position.Y,
+                                    updateData.CreateData.MoveInfo.Position.Z,
+                                    updateData.CreateData.MoveInfo.Orientation);
+                                GetSession().GameState.HasCurrentPlayerPosition = true;
+                            }
+                        }
 
                         if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
                            !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
@@ -150,9 +186,27 @@ namespace HermesProxy.World.Client
                         var guid = oldGuid.To128(GetSession().GameState);
                         PrintString($"Guid = {guid.ToString()}", i);
 
-                        ObjectUpdate updateData = new ObjectUpdate(guid, UpdateTypeModern.CreateObject2, GetSession());
+                        // WotLK-style legacy streams may use CreateObject2 broadly, while modern builders are
+                        // generally self-player-centric for CreateObject2. Downgrade non-self objects to CreateObject1.
+                        UpdateTypeModern createType =
+                            (guid == GetSession().GameState.CurrentPlayerGuid)
+                                ? UpdateTypeModern.CreateObject2
+                                : UpdateTypeModern.CreateObject1;
+
+                        ObjectUpdate updateData = new ObjectUpdate(guid, createType, GetSession());
                         AuraUpdate auraUpdate = new AuraUpdate(guid, true);
                         ReadCreateObjectBlock(packet, guid, updateData, auraUpdate, i);
+
+                        if (guid == GetSession().GameState.CurrentPlayerGuid &&
+                            updateData.CreateData?.MoveInfo != null)
+                        {
+                            GetSession().GameState.CurrentPlayerPosition = new Framework.GameMath.Position(
+                                updateData.CreateData.MoveInfo.Position.X,
+                                updateData.CreateData.MoveInfo.Position.Y,
+                                updateData.CreateData.MoveInfo.Position.Z,
+                                updateData.CreateData.MoveInfo.Orientation);
+                            GetSession().GameState.HasCurrentPlayerPosition = true;
+                        }
 
                         if (guid.IsItem() && updateData.ObjectData.EntryID != null &&
                            !GameData.ItemTemplates.ContainsKey((uint)updateData.ObjectData.EntryID))
@@ -186,10 +240,14 @@ namespace HermesProxy.World.Client
 
             if (updateObject.ObjectUpdates.Count == 0 &&
                 GetSession().GameState.IsWaitingForNewWorld)
+            {
+                Log.Print(LogType.Debug, "[UpdateHandler] No object updates while waiting for new world; skipping send.");
                 return;
+            }
 
             foreach (uint itemId in missingItemTemplates)
             {
+                GetSession().GameState.PendingLegacyItemQueries.Enqueue(itemId);
                 WorldPacket packet2 = new WorldPacket(Opcode.CMSG_ITEM_QUERY_SINGLE);
                 packet2.WriteUInt32(itemId);
                 if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
@@ -251,9 +309,14 @@ namespace HermesProxy.World.Client
 
             if (activePlayerUpdateIndex > 0)
             {
-                ObjectUpdate tmp = updateObject.ObjectUpdates[0];
-                updateObject.ObjectUpdates[0] = updateObject.ObjectUpdates[activePlayerUpdateIndex];
-                updateObject.ObjectUpdates[activePlayerUpdateIndex] = tmp;
+                if (IsWotlkFrontendClient())
+                    MoveWotlkSelfCreateAfterInventoryCreates(updateObject.ObjectUpdates, activePlayerUpdateIndex);
+                else
+                {
+                    ObjectUpdate tmp = updateObject.ObjectUpdates[0];
+                    updateObject.ObjectUpdates[0] = updateObject.ObjectUpdates[activePlayerUpdateIndex];
+                    updateObject.ObjectUpdates[activePlayerUpdateIndex] = tmp;
+                }
             }
 
             // Fix flag carrier positions on map bugging out when player goes out of range
@@ -275,13 +338,201 @@ namespace HermesProxy.World.Client
                 }
             }
 
-            if (updateObject.ObjectUpdates.Count != 0 ||
-                updateObject.DestroyedGuids.Count != 0 ||
-                updateObject.OutOfRangeGuids.Count != 0)
+            // WotLK clients are sensitive to initial ordering; keep self values updates separate.
+            if (IsWotlkFrontendClient())
+            {
+                WowGuid128 playerGuid = GetSession().GameState.CurrentPlayerGuid;
+                List<ObjectUpdate> playerValuesUpdates = new List<ObjectUpdate>();
+                List<ObjectUpdate> otherUpdates = new List<ObjectUpdate>();
+                bool sentSelfCreate = false;
+
+                foreach (var upd in updateObject.ObjectUpdates)
+                {
+                    if (upd.Guid == playerGuid && upd.Type == UpdateTypeModern.Values)
+                        playerValuesUpdates.Add(upd);
+                    else
+                        otherUpdates.Add(upd);
+                }
+
+                var gameState = GetSession().GameState;
+                bool hasSelfCreateForWorldport = otherUpdates.Exists(upd =>
+                    upd.Guid == playerGuid &&
+                    (upd.Type == UpdateTypeModern.CreateObject1 || upd.Type == UpdateTypeModern.CreateObject2));
+
+                if (hasSelfCreateForWorldport &&
+                    (gameState.IsWaitingForWorldPortAck || gameState.IsWaitingForWotlkMovementTeleportAck) &&
+                    !gameState.IsSettlingWotlkWorldPortObjectStream)
+                {
+                    gameState.IsSettlingWotlkWorldPortObjectStream = true;
+                    gameState.WotlkWorldPortObjectStreamSettleStartTick = Environment.TickCount;
+                    Log.Print(LogType.Debug,
+                        "[WotLK] WORLDPORT-v14 starting destination object settle window at self create.");
+                }
+
+                if (gameState.IsSettlingWotlkWorldPortObjectStream)
+                    HoldWotlkWorldObjectsDuringWorldPortSettle(otherUpdates, updateObject);
+
+                if (otherUpdates.Count != 0 ||
+                    updateObject.DestroyedGuids.Count != 0 ||
+                    updateObject.OutOfRangeGuids.Count != 0)
+                {
+                    Log.Print(LogType.Debug, $"[UpdateHandler] Sending non-player updates={otherUpdates.Count}, destroys={updateObject.DestroyedGuids.Count}, oor={updateObject.OutOfRangeGuids.Count}.");
+                    sentSelfCreate = otherUpdates.Exists(upd =>
+                        upd.Guid == playerGuid &&
+                        (upd.Type == UpdateTypeModern.CreateObject1 || upd.Type == UpdateTypeModern.CreateObject2));
+
+                    SendWotlkUpdateObjectBatches(updateObject, otherUpdates);
+                }
+
+                if (playerValuesUpdates.Count != 0)
+                {
+                    Log.Print(LogType.Debug, $"[UpdateHandler] Sending player-values updates={playerValuesUpdates.Count}.");
+                    UpdateObject playerUpdateObject = new UpdateObject(GetSession().GameState);
+                    playerUpdateObject.ObjectUpdates.AddRange(playerValuesUpdates);
+                    SendPacketToClient(playerUpdateObject);
+                }
+
+                if (sentSelfCreate)
+                {
+                    Log.Print(LogType.Debug, "[WotLK] Re-sending movement bootstrap and time sync after self create.");
+                    GetSession().InstanceSocket?.SendWotlkMovementBootstrap(force: true);
+                    GetSession().InstanceSocket?.SendWotlkTimeSyncRequest("after self create");
+                }
+            }
+            else if (updateObject.ObjectUpdates.Count != 0 ||
+                     updateObject.DestroyedGuids.Count != 0 ||
+                     updateObject.OutOfRangeGuids.Count != 0)
+            {
+                Log.Print(LogType.Debug, $"[UpdateHandler] Sending updates={updateObject.ObjectUpdates.Count}, destroys={updateObject.DestroyedGuids.Count}, oor={updateObject.OutOfRangeGuids.Count}.");
                 SendPacketToClient(updateObject);
+            }
 
             foreach (var auraUpdate in auraUpdates)
                 SendPacketToClient(auraUpdate);
+        }
+
+        private void HoldWotlkWorldObjectsDuringWorldPortSettle(List<ObjectUpdate> updates, UpdateObject updateObject)
+        {
+            var gameState = GetSession().GameState;
+            WowGuid128 playerGuid = gameState.CurrentPlayerGuid;
+
+            List<ObjectUpdate> immediate = new List<ObjectUpdate>();
+            List<ObjectUpdate> delayed = new List<ObjectUpdate>();
+
+            foreach (var update in updates)
+            {
+                bool isPlayer = update.Guid == playerGuid;
+                bool isInventory = IsInventoryObjectUpdate(update);
+
+                // Allow the player's own create/values and inventory items needed
+                // by the character UI.  Hold world creatures/gameobjects/corpses
+                // until the WotLK client finishes the post-NEW_WORLD handshake.
+                if (isPlayer || isInventory)
+                    immediate.Add(update);
+                else
+                    delayed.Add(update);
+            }
+
+            if (delayed.Count == 0 && updateObject.DestroyedGuids.Count == 0 && updateObject.OutOfRangeGuids.Count == 0)
+                return;
+
+            gameState.PendingLoginUpdates.AddRange(delayed);
+            gameState.PendingLoginDestroys.AddRange(updateObject.DestroyedGuids);
+            gameState.PendingLoginOutOfRangeGuids.AddRange(updateObject.OutOfRangeGuids);
+
+            updates.Clear();
+            updates.AddRange(immediate);
+            updateObject.DestroyedGuids.Clear();
+            updateObject.OutOfRangeGuids.Clear();
+
+            Log.Print(LogType.Debug,
+                $"[WotLK] WORLDPORT-v14 holding destination world objects until client settle: heldUpdates={delayed.Count}, heldDestroys={gameState.PendingLoginDestroys.Count}, heldOor={gameState.PendingLoginOutOfRangeGuids.Count}, immediate={immediate.Count}.");
+        }
+
+        private void SendWotlkUpdateObjectBatches(UpdateObject source, List<ObjectUpdate> updates)
+        {
+            const int MaxWotlkObjectUpdatesPerPacket = 24;
+            const int MaxWotlkOutOfRangeGuidsPerPacket = 64;
+
+            bool needsBatching =
+                updates.Count > MaxWotlkObjectUpdatesPerPacket ||
+                source.OutOfRangeGuids.Count > MaxWotlkOutOfRangeGuidsPerPacket;
+
+            if (!needsBatching)
+            {
+                source.ObjectUpdates.Clear();
+                source.ObjectUpdates.AddRange(updates);
+                SendPacketToClient(source);
+                return;
+            }
+
+            Log.Print(LogType.Debug,
+                $"[WotLK] UPDATE_OBJECT-v14 batching object storm: updates={updates.Count}, destroys={source.DestroyedGuids.Count}, oor={source.OutOfRangeGuids.Count}, maxUpdates={MaxWotlkObjectUpdatesPerPacket}.");
+
+            int batch = 0;
+            for (int index = 0; index < updates.Count; index += MaxWotlkObjectUpdatesPerPacket)
+            {
+                int take = Math.Min(MaxWotlkObjectUpdatesPerPacket, updates.Count - index);
+                UpdateObject chunk = new UpdateObject(GetSession().GameState);
+                chunk.ObjectUpdates.AddRange(updates.GetRange(index, take));
+
+                // Preserve legacy destroyed GUID bookkeeping on the first packet.  For
+                // WotLK these are logged/dropped by UpdateObject.Write because real
+                // object destroys must travel as SMSG_DESTROY_OBJECT, but retaining the
+                // list here keeps older non-WotLK behavior mirrored as closely as possible.
+                if (batch == 0 && source.DestroyedGuids.Count > 0)
+                    chunk.DestroyedGuids.AddRange(source.DestroyedGuids);
+
+                Log.Print(LogType.Debug,
+                    $"[WotLK] UPDATE_OBJECT-v14 sending object batch {batch + 1}: updates={take}, start={index}.");
+                SendPacketToClient(chunk);
+                batch++;
+            }
+
+            if (updates.Count == 0 && source.DestroyedGuids.Count > 0)
+            {
+                UpdateObject destroyOnly = new UpdateObject(GetSession().GameState);
+                destroyOnly.DestroyedGuids.AddRange(source.DestroyedGuids);
+                Log.Print(LogType.Debug,
+                    $"[WotLK] UPDATE_OBJECT-v14 sending destroy-only batch: destroys={source.DestroyedGuids.Count}.");
+                SendPacketToClient(destroyOnly);
+            }
+
+            for (int index = 0; index < source.OutOfRangeGuids.Count; index += MaxWotlkOutOfRangeGuidsPerPacket)
+            {
+                int take = Math.Min(MaxWotlkOutOfRangeGuidsPerPacket, source.OutOfRangeGuids.Count - index);
+                UpdateObject farChunk = new UpdateObject(GetSession().GameState);
+                farChunk.OutOfRangeGuids.AddRange(source.OutOfRangeGuids.GetRange(index, take));
+                Log.Print(LogType.Debug,
+                    $"[WotLK] UPDATE_OBJECT-v14 sending out-of-range batch: guids={take}, start={index}.");
+                SendPacketToClient(farChunk);
+            }
+        }
+
+        private static void MoveWotlkSelfCreateAfterInventoryCreates(List<ObjectUpdate> updates, int activePlayerUpdateIndex)
+        {
+            ObjectUpdate selfUpdate = updates[activePlayerUpdateIndex];
+            updates.RemoveAt(activePlayerUpdateIndex);
+
+            List<ObjectUpdate> inventoryUpdates = updates
+                .Where(IsInventoryObjectUpdate)
+                .ToList();
+            List<ObjectUpdate> otherUpdates = updates
+                .Where(update => !IsInventoryObjectUpdate(update))
+                .ToList();
+
+            updates.Clear();
+            updates.AddRange(inventoryUpdates);
+            updates.Add(selfUpdate);
+            updates.AddRange(otherUpdates);
+        }
+
+        private static bool IsInventoryObjectUpdate(ObjectUpdate update)
+        {
+            return update.Guid.IsItem() &&
+                (update.Type == UpdateTypeModern.CreateObject1 ||
+                 update.Type == UpdateTypeModern.CreateObject2 ||
+                 update.Type == UpdateTypeModern.Values);
         }
 
         public void ReadNearObjectsBlock(WorldPacket packet, object index)
@@ -299,6 +550,14 @@ namespace HermesProxy.World.Client
         {
             var objCount = packet.ReadInt32();
             PrintString($"FarObjectsCount = {objCount}", index);
+
+            // v14: do not suppress large FarObjects sweeps.  1.12 uses these
+            // sweeps to tell the client which old-grid objects disappeared after
+            // a teleport/login.  Suppressing them can leave the Wrath client with
+            // stale object pointers and later VALUES updates can crash it.
+            if (IsWotlkFrontendClient() && objCount >= 100)
+                Log.Print(LogType.Debug, $"[UpdateHandler] WotLK forwarding large FarObjects sweep count={objCount} in safe batches.");
+
             for (var j = 0; j < objCount; j++)
             {
                 var guid = packet.ReadPackedGuid().To128(GetSession().GameState);
@@ -313,6 +572,8 @@ namespace HermesProxy.World.Client
                 GetSession().GameState.ObjectCacheModern.Remove(guid);
                 GetSession().GameState.ObjectCacheMutex.ReleaseMutex();
                 GetSession().GameState.LastAuraCasterOnTarget.Remove(guid);
+                if (IsWotlkFrontendClient())
+                    GetSession().GameState.WotlkClientKnownObjectGuids.Remove(guid);
 
                 // If the pet is too far away, sends a SMSG_UPDATE_OBJECT protocol
                 if (GetSession().GameState.CurrentPetGuid == guid)
@@ -996,6 +1257,26 @@ namespace HermesProxy.World.Client
             if (updateData != null && moveInfo != null)
             {
                 moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+
+                if (IsWotlkFrontendClient() && guid == GetSession().GameState.CurrentPlayerGuid)
+                {
+                    // Some legacy control flows can leave Root/PendingRoot stuck in player updates.
+                    // Wrath client then emits only facing/turn opcodes and never locomotion.
+                    uint flagsBeforeUnlock = moveInfo.Flags;
+                    moveInfo.RemoveMovementFlag(MovementFlagModern.Root | MovementFlagModern.PendingRoot);
+
+                    if (flagsBeforeUnlock != moveInfo.Flags)
+                        Log.Print(LogType.Debug, $"[WotLK] Cleared self movement flags: 0x{flagsBeforeUnlock:X8} -> 0x{moveInfo.Flags:X8}");
+
+                    if (updateData.Type != UpdateTypeModern.Values)
+                    {
+                        Log.Print(LogType.Debug,
+                            $"[WotLK] Self movement create: flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, " +
+                            $"pos=({moveInfo.Position.X:F3},{moveInfo.Position.Y:F3},{moveInfo.Position.Z:F3}), " +
+                            $"speed walk/run/back/swim/fly/turn/pitch={moveInfo.WalkSpeed:F3}/{moveInfo.RunSpeed:F3}/{moveInfo.RunBackSpeed:F3}/{moveInfo.SwimSpeed:F3}/{moveInfo.FlightSpeed:F3}/{moveInfo.TurnRate:F3}/{moveInfo.PitchRate:F3}");
+                    }
+                }
+
                 moveInfo.ValidateMovementInfo();
                 updateData.CreateData.MoveInfo = moveInfo;
             }
@@ -1640,7 +1921,7 @@ namespace HermesProxy.World.Client
                         updateData.UnitData.Flags = updates[UNIT_FIELD_FLAGS].UInt32Value;
                     }
 
-                    // Here because of this bullshit in cmangos:
+                    // Compatibility fix for this cmangos behavior:
                     // https://github.com/cmangos/mangos-tbc/blob/fd093b33071b546545cc5973608304bccc5a041b/src/game/Entities/Object.cpp#L544
                     if (updateData.UnitData.Flags.HasAnyFlag(UnitFlags.ServerControlled) && isCreate &&
                         guid == GetSession().GameState.CurrentPlayerGuid && updateData.CreateData.MoveSpline == null)
@@ -1649,16 +1930,75 @@ namespace HermesProxy.World.Client
                     if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056) &&
                         updateData.UnitData.PvpFlags == null)
                         updateData.UnitData.PvpFlags = ReadPvPFlags(updates);
+
+                    if (IsWotlkFrontendClient() &&
+                        guid == GetSession().GameState.CurrentPlayerGuid &&
+                        updateData.UnitData.Flags.HasValue)
+                    {
+                        uint flagsBefore = updateData.UnitData.Flags.Value;
+                        const UnitFlags wotlkSelfMovementLocks =
+                            UnitFlags.ServerControlled |
+                            UnitFlags.RemoveClientControl |
+                            UnitFlags.Stunned |
+                            UnitFlags.TaxiFlight |
+                            UnitFlags.Confused |
+                            UnitFlags.Fleeing |
+                            UnitFlags.Possessed;
+
+                        // A failed far teleport can leave a vanilla 1.12 character logged in
+                        // as dead/ghost-immune at the destination.  The 3.3.5 client is
+                        // much less tolerant of receiving those legacy self immunity bits
+                        // before its local player has fully stabilised; after the bad
+                        // Shadowglen/Tanaris transition this was visible as self flags
+                        // 0x00000308 and 0x00001308 immediately before the frontend died.
+                        // Keep the authoritative server state on the backend, but do not
+                        // expose the legacy self immunity bits to the WotLK frontend.
+                        const UnitFlags wotlkSelfLegacyDeadImmuneBits =
+                            UnitFlags.ImmuneToPc |
+                            UnitFlags.ImmuneToNpc |
+                            UnitFlags.NotAttackable1 |
+                            UnitFlags.NotAttackable2;
+
+                        updateData.UnitData.Flags &= ~((uint)(wotlkSelfMovementLocks | wotlkSelfLegacyDeadImmuneBits));
+                        updateData.UnitData.Flags |= (uint)UnitFlags.PlayerControlled;
+
+                        if (flagsBefore != updateData.UnitData.Flags.Value)
+                            Log.Print(LogType.Debug, $"[WotLK] Sanitized self unit flags for WotLK frontend: 0x{flagsBefore:X8} -> 0x{updateData.UnitData.Flags.Value:X8}");
+                        else if (isCreate)
+                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags on create: 0x{flagsBefore:X8}");
+                        else
+                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags update: 0x{flagsBefore:X8}");
+                    }
                 }
                 int UNIT_FIELD_FLAGS_2 = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS_2);
                 if (UNIT_FIELD_FLAGS_2 >= 0 && updateMaskArray[UNIT_FIELD_FLAGS_2])
                 {
                     updateData.UnitData.Flags2 = updates[UNIT_FIELD_FLAGS_2].UInt32Value;
+
+                    if (IsWotlkFrontendClient() &&
+                        guid == GetSession().GameState.CurrentPlayerGuid)
+                    {
+                        uint flags2Before = updateData.UnitData.Flags2.Value;
+                        const UnitFlags2 wotlkSelfMovementLocks2 =
+                            UnitFlags2.ForceMovement |
+                            UnitFlags2.CannotTurn |
+                            UnitFlags2.NoActions;
+
+                        updateData.UnitData.Flags2 &= ~((uint)wotlkSelfMovementLocks2);
+
+                        if (flags2Before != updateData.UnitData.Flags2.Value)
+                            Log.Print(LogType.Debug, $"[WotLK] Cleared self movement-lock unit flags2: 0x{flags2Before:X8} -> 0x{updateData.UnitData.Flags2.Value:X8}");
+                        else if (isCreate)
+                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags2 on create: 0x{flags2Before:X8}");
+                        else
+                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags2 update: 0x{flags2Before:X8}");
+                    }
                 }
                 int UNIT_FIELD_AURASTATE = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_AURASTATE);
                 if (UNIT_FIELD_AURASTATE >= 0 && updateMaskArray[UNIT_FIELD_AURASTATE])
                 {
                     updateData.UnitData.AuraState = updates[UNIT_FIELD_AURASTATE].UInt32Value;
+
                 }
                 int UNIT_FIELD_BASEATTACKTIME = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_BASEATTACKTIME);
                 if (UNIT_FIELD_BASEATTACKTIME >= 0)
@@ -1687,7 +2027,11 @@ namespace HermesProxy.World.Client
                 int UNIT_FIELD_DISPLAYID = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_DISPLAYID);
                 if (UNIT_FIELD_DISPLAYID >= 0 && updateMaskArray[UNIT_FIELD_DISPLAYID])
                 {
-                    updateData.UnitData.DisplayID = updates[UNIT_FIELD_DISPLAYID].Int32Value;
+                    int displayId = updates[UNIT_FIELD_DISPLAYID].Int32Value;
+                    if (IsWotlkFrontendClient() && displayId > 0)
+                        displayId = (int)GameData.GetSafeCreatureDisplayId((uint)displayId);
+
+                    updateData.UnitData.DisplayID = displayId;
 
                     // in post vanilla versions, the client automatically multiplies the scale
                     // the server sends it by the default scale for this display id in the dbc
@@ -1698,12 +2042,20 @@ namespace HermesProxy.World.Client
                 int UNIT_FIELD_NATIVEDISPLAYID = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_NATIVEDISPLAYID);
                 if (UNIT_FIELD_NATIVEDISPLAYID >= 0 && updateMaskArray[UNIT_FIELD_NATIVEDISPLAYID])
                 {
-                    updateData.UnitData.NativeDisplayID = updates[UNIT_FIELD_NATIVEDISPLAYID].Int32Value;
+                    int nativeDisplayId = updates[UNIT_FIELD_NATIVEDISPLAYID].Int32Value;
+                    if (IsWotlkFrontendClient() && nativeDisplayId > 0)
+                        nativeDisplayId = (int)GameData.GetSafeCreatureDisplayId((uint)nativeDisplayId);
+
+                    updateData.UnitData.NativeDisplayID = nativeDisplayId;
                 }
                 int UNIT_FIELD_MOUNTDISPLAYID = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_MOUNTDISPLAYID);
                 if (UNIT_FIELD_MOUNTDISPLAYID >= 0 && updateMaskArray[UNIT_FIELD_MOUNTDISPLAYID])
                 {
-                    updateData.UnitData.MountDisplayID = updates[UNIT_FIELD_MOUNTDISPLAYID].Int32Value;
+                    int mountDisplayId = updates[UNIT_FIELD_MOUNTDISPLAYID].Int32Value;
+                    if (IsWotlkFrontendClient() && mountDisplayId > 0)
+                        mountDisplayId = (int)GameData.GetSafeCreatureDisplayId((uint)mountDisplayId);
+
+                    updateData.UnitData.MountDisplayID = mountDisplayId;
                 }
                 int UNIT_FIELD_MINDAMAGE = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_MINDAMAGE);
                 if (UNIT_FIELD_MINDAMAGE >= 0 && updateMaskArray[UNIT_FIELD_MINDAMAGE])
@@ -1744,6 +2096,23 @@ namespace HermesProxy.World.Client
                         updateData.UnitData.ShapeshiftForm = (byte)((updates[UNIT_FIELD_BYTES_1].UInt32Value >> 16) & 0xFF);
                         updateData.UnitData.VisFlags = (byte)((updates[UNIT_FIELD_BYTES_1].UInt32Value >> 24) & 0xFF);
                     }
+
+                    if (IsWotlkFrontendClient() &&
+                        guid == GetSession().GameState.CurrentPlayerGuid)
+                    {
+                        byte standBefore = updateData.UnitData.StandState ?? 0;
+                        byte shapeshift = updateData.UnitData.ShapeshiftForm ?? 0;
+                        byte animTier = updateData.UnitData.AnimTier ?? 0;
+
+                        if (isCreate)
+                        {
+                            Log.Print(LogType.Debug, $"[WotLK] Self bytes1 on create: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
+                        }
+                        else
+                        {
+                            Log.Print(LogType.Debug, $"[WotLK] Self bytes1 update: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
+                        }
+                    }
                 }
                 int UNIT_FIELD_PETNUMBER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_PETNUMBER);
                 if (UNIT_FIELD_PETNUMBER >= 0 && updateMaskArray[UNIT_FIELD_PETNUMBER])
@@ -1771,7 +2140,14 @@ namespace HermesProxy.World.Client
                     UnitDynamicFlagsLegacy flags = (UnitDynamicFlagsLegacy)(updates[UNIT_DYNAMIC_FLAGS].UInt32Value);
                     if (flags.HasFlag(UnitDynamicFlagsLegacy.Tapped) && flags.HasFlag(UnitDynamicFlagsLegacy.TappedByPlayer))
                         flags &= ~(UnitDynamicFlagsLegacy.Tapped | UnitDynamicFlagsLegacy.TappedByPlayer);
-                    updateData.ObjectData.DynamicFlags = (uint)flags.CastFlags<UnitDynamicFlagsModern>();
+
+                    // WotLK 3.3.5 still uses the vanilla/TBC UNIT_DYNAMIC_FLAGS
+                    // bit positions (Lootable=0x01, Tapped=0x04, etc.).  Mapping
+                    // these to the modern retail enum moves Lootable to 0x04, so
+                    // dead creatures never show the loot cursor in the 3.3.5 client.
+                    updateData.ObjectData.DynamicFlags = IsWotlkFrontendClient()
+                        ? (uint)flags
+                        : (uint)flags.CastFlags<UnitDynamicFlagsModern>();
 
                     if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                     {
@@ -2004,6 +2380,7 @@ namespace HermesProxy.World.Client
                                 auraUpdate.Auras.Add(aura);
                         }
                     }
+
                 }
             }
 

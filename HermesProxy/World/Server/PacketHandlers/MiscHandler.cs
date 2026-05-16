@@ -1,4 +1,4 @@
-﻿using Framework.Constants;
+using Framework.Constants;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World;
@@ -15,6 +15,12 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_TIME_SYNC_RESPONSE)]
         void HandleTimeSyncResponse(TimeSyncResponse response)
         {
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                Log.Print(LogType.Debug, $"[WotLK] Received CMSG_TIME_SYNC_RESPONSE counter={response.SequenceIndex}, clientTime={response.ClientTime}.");
+                FlushPendingWotlkSettledWorldPortUpdates($"CMSG_TIME_SYNC_RESPONSE counter={response.SequenceIndex}");
+            }
+
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
                 WorldPacket packet = new WorldPacket(Opcode.CMSG_TIME_SYNC_RESPONSE);
@@ -30,9 +36,41 @@ namespace HermesProxy.World.Server
             if (at.Entered == false)
                 return;
 
-            GetSession().GameState.LastEnteredAreaTrigger = at.AreaTriggerID;
+            var gameState = GetSession().GameState;
+            if (IsWaitingForWotlkSameMapTeleport(gameState))
+            {
+                // While a same-map movement teleport is pending, area-trigger packets
+                // can still be from the source zone.  Forwarding those during the
+                // handoff can pull the 1.12 server back toward the old grid/zone.
+                Log.Print(LogType.Debug, $"[WotLK] suppressing stale CMSG_AREA_TRIGGER {at.AreaTriggerID} during teleport ACK wait.");
+                return;
+            }
+
+            gameState.LastEnteredAreaTrigger = at.AreaTriggerID;
             WorldPacket packet = new WorldPacket(Opcode.CMSG_AREA_TRIGGER);
             packet.WriteUInt32(at.AreaTriggerID);
+            SendPacketToServer(packet);
+        }
+
+        [PacketHandler(Opcode.CMSG_ZONEUPDATE)]
+        void HandleZoneUpdate(ZoneUpdate zone)
+        {
+            var gameState = GetSession().GameState;
+            if (IsWaitingForWotlkSameMapTeleport(gameState))
+            {
+                // The first CMSG_ZONEUPDATE after a Wrath same-map movement teleport
+                // is useful as proof that the client has accepted the destination,
+                // but its zone id can still be from the source area.  Forwarding it
+                // to a 1.12 MaNGOS backend triggers "Delayed Zone Update: invalid
+                // zoneId" and can leave grids/objects in a bad state.
+                Log.Print(LogType.Debug,
+                    $"[WotLK] using CMSG_ZONEUPDATE as teleport ACK and suppressing stale zone id {zone.ZoneID}.");
+                CompletePendingWotlkSameMapTeleportFromClient($"CMSG_ZONEUPDATE zone={zone.ZoneID}", 0);
+                return;
+            }
+
+            WorldPacket packet = new WorldPacket(Opcode.CMSG_ZONEUPDATE);
+            packet.WriteUInt32(zone.ZoneID);
             SendPacketToServer(packet);
         }
 
@@ -52,6 +90,9 @@ namespace HermesProxy.World.Server
             SendPacketToServer(packet);
         }
         [PacketHandler(Opcode.CMSG_QUERY_CORPSE_LOCATION_FROM_CLIENT)]
+        [PacketHandler(Opcode.CMSG_CORPSE_MAP_POSITION_QUERY)]
+        [PacketHandler(Opcode.CMSG_CORPSE_QUERY)]
+        [PacketHandler(Opcode.MSG_CORPSE_QUERY)]
         void HandleQueryCorpseLocationFromClient(QueryCorpseLocationFromClient query)
         {
             WorldPacket packet = new WorldPacket(Opcode.MSG_CORPSE_QUERY);

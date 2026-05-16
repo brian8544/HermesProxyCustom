@@ -1,4 +1,4 @@
-﻿using BNetServer.Networking;
+using BNetServer.Networking;
 using Framework.Logging;
 using Framework.Networking;
 using HermesProxy.World;
@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using BNetServer;
 using Framework;
 using HermesProxy.Configuration;
+using HermesProxy.Enums;
 
 namespace HermesProxy
 {
@@ -90,6 +91,18 @@ namespace HermesProxy
             // LoginServiceManager holds our external IPs so that other player can connect to our Hermes instance
             LoginServiceManager.Instance.Initialize();
 
+            if (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                var wotlkAuthSocketServer = StartServer<WotlkAuthSocket>(new IPEndPoint(bindIp, Settings.WotlkAuthPort));
+                var wotlkWorldSocketServer = StartServer<WorldSocket>(new IPEndPoint(bindIp, Settings.WotlkWorldPort));
+
+                while (wotlkAuthSocketServer.IsListening || wotlkWorldSocketServer.IsListening)
+                {
+                    Thread.Sleep(TimeSpan.FromSeconds(10));
+                }
+                return;
+            }
+
             // 1. Start the listener for binary bnet RPC service connections
             var bnetSocketServer = StartServer<BnetTcpSession>(new IPEndPoint(bindIp, Settings.BNetPort));
 
@@ -106,11 +119,6 @@ namespace HermesProxy
             {
                 Thread.Sleep(TimeSpan.FromSeconds(10));
             }
-
-            Console.WriteLine($"(restSocketServer.IsListening: {restSocketServer.IsListening}");
-            Console.WriteLine($"(bnetSocketServer.IsListening: {bnetSocketServer.IsListening}");
-            Console.WriteLine($"(realmSocketServer.IsListening: {realmSocketServer.IsListening}");
-            Console.WriteLine($"(worldSocketServer.IsListening: {worldSocketServer.IsListening}");
         }
 
         private static SocketManager<TSocketType> StartServer<TSocketType>(IPEndPoint bindIp) where TSocketType : ISocket
@@ -147,10 +155,10 @@ namespace HermesProxy
                 var parsedJson = JsonSerializer.Deserialize<Dictionary<string, object>>(rawJson);
 
                 string commitDateStr = parsedJson!["created_at"].ToString();
-                DateTime commitDate = DateTime.Parse(commitDateStr!, CultureInfo.InvariantCulture).ToUniversalTime();;
+                DateTime commitDate = DateTime.Parse(commitDateStr!, CultureInfo.InvariantCulture).ToUniversalTime();
 
                 string myCommitDateStr = GitVersionInformation.CommitDate;
-                DateTime myCommitDate = DateTime.Parse(myCommitDateStr, CultureInfo.InvariantCulture).ToUniversalTime();;
+                DateTime myCommitDate = DateTime.Parse(myCommitDateStr, CultureInfo.InvariantCulture).ToUniversalTime();
 
                 if (commitDate > myCommitDate)
                 {

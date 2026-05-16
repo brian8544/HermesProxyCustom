@@ -18,6 +18,7 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -31,7 +32,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            TargetGUID = _worldPacket.ReadPackedGuid128();
+            TargetGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 TargetGUID;
@@ -60,7 +63,9 @@ namespace HermesProxy.World.Server.Packets
         {
             _worldPacket.WritePackedGuid128(ArbiterGUID);
             _worldPacket.WritePackedGuid128(RequestedByGUID);
-            _worldPacket.WritePackedGuid128(RequestedByWowAccount);
+
+            if (!ModernVersion.RemovedInVersion(ClientVersionBuild.V4_0_1_13164))
+                _worldPacket.WritePackedGuid128(RequestedByWowAccount);
         }
 
         public WowGuid128 ArbiterGUID;
@@ -74,9 +79,20 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            ArbiterGUID = _worldPacket.ReadPackedGuid128();
-            Accepted = _worldPacket.HasBit();
-            Forfeited = _worldPacket.HasBit();
+            ArbiterGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                Accepted = _worldPacket.CanRead() && _worldPacket.ReadUInt8() != 0;
+                Forfeited = _worldPacket.CanRead() && _worldPacket.ReadUInt8() != 0;
+            }
+            else
+            {
+                Accepted = _worldPacket.HasBit();
+                Forfeited = _worldPacket.HasBit();
+            }
         }
 
         public WowGuid128 ArbiterGUID;

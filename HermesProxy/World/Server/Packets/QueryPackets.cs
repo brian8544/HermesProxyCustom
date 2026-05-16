@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -20,8 +20,10 @@ using System;
 using HermesProxy.World.Objects;
 using Framework.Collections;
 using Framework.Constants;
+using Framework;
 using System.Collections.Generic;
 using Framework.IO;
+using HermesProxy.Enums;
 
 namespace HermesProxy.World.Server.Packets
 {
@@ -199,6 +201,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340)
+            {
+                WriteWotlk335();
+                return;
+            }
+
             _worldPacket.WriteUInt32(QuestID);
             _worldPacket.WriteBit(Allow);
             _worldPacket.FlushBits();
@@ -345,6 +353,172 @@ namespace HermesProxy.World.Server.Packets
             }
         }
 
+        private void WriteWotlk335()
+        {
+            if (!Allow || Info == null)
+            {
+                _worldPacket.WriteUInt32(QuestID | 0x80000000u);
+                return;
+            }
+
+            _worldPacket.WriteUInt32(Info.QuestID);
+            _worldPacket.WriteUInt32((uint)Math.Max(0, Info.QuestType));
+            _worldPacket.WriteInt32(Info.QuestLevel);
+            _worldPacket.WriteInt32(Info.MinLevel);
+            _worldPacket.WriteInt32(Info.QuestSortID);
+            _worldPacket.WriteUInt32(Info.QuestInfoID);
+            _worldPacket.WriteUInt32(Info.SuggestedGroupNum);
+
+            WriteWotlk335ReputationObjectives();
+
+            _worldPacket.WriteUInt32(Info.RewardNextQuest);
+            _worldPacket.WriteUInt32(Info.RewardXPDifficulty);
+            _worldPacket.WriteUInt32((uint)Math.Max(0, Info.RewardMoney));
+            _worldPacket.WriteUInt32(Info.RewardBonusMoney);
+            _worldPacket.WriteUInt32(Info.RewardDisplaySpell[0]);
+            _worldPacket.WriteInt32((int)Info.RewardSpell);
+            _worldPacket.WriteUInt32(Info.RewardHonor);
+            _worldPacket.WriteFloat(Info.RewardKillHonor);
+            _worldPacket.WriteUInt32(Info.StartItem);
+            _worldPacket.WriteUInt32(Info.Flags & 0xFFFF);
+            _worldPacket.WriteUInt32(Info.RewardTitle);
+            _worldPacket.WriteUInt32(GetWotlk335PlayerKillObjective());
+            _worldPacket.WriteUInt32(0); // bonus talents
+            _worldPacket.WriteInt32(Info.RewardArenaPoints);
+            _worldPacket.WriteUInt32(0); // review rep show mask
+
+            for (int i = 0; i < QuestConst.QuestRewardItemCount; ++i)
+            {
+                _worldPacket.WriteUInt32(Info.RewardItems[i]);
+                _worldPacket.WriteUInt32(Info.RewardAmount[i]);
+            }
+
+            for (int i = 0; i < QuestConst.QuestRewardChoicesCount; ++i)
+            {
+                _worldPacket.WriteUInt32(Info.UnfilteredChoiceItems[i].ItemID);
+                _worldPacket.WriteUInt32(Info.UnfilteredChoiceItems[i].Quantity);
+            }
+
+            for (int i = 0; i < QuestConst.QuestRewardReputationsCount; ++i)
+                _worldPacket.WriteUInt32(Info.RewardFactionID[i]);
+            for (int i = 0; i < QuestConst.QuestRewardReputationsCount; ++i)
+                _worldPacket.WriteInt32(Info.RewardFactionValue[i]);
+            for (int i = 0; i < QuestConst.QuestRewardReputationsCount; ++i)
+                _worldPacket.WriteInt32(Info.RewardFactionOverride[i]);
+
+            _worldPacket.WriteUInt32(Info.POIContinent);
+            _worldPacket.WriteFloat(Info.POIx);
+            _worldPacket.WriteFloat(Info.POIy);
+            _worldPacket.WriteUInt32(Info.POIPriority);
+
+            _worldPacket.WriteCString(Info.LogTitle ?? string.Empty);
+            _worldPacket.WriteCString(Info.LogDescription ?? string.Empty);
+            _worldPacket.WriteCString(Info.QuestDescription ?? string.Empty);
+            _worldPacket.WriteCString(Info.AreaDescription ?? string.Empty);
+            _worldPacket.WriteCString(Info.QuestCompletionLog ?? string.Empty);
+
+            WriteWotlk335CreatureOrGoObjectives();
+            WriteWotlk335ItemObjectives();
+            WriteWotlk335ObjectiveTexts();
+        }
+
+        private void WriteWotlk335ReputationObjectives()
+        {
+            int written = 0;
+            for (int i = 0; i < Info.Objectives.Count && written < 2; ++i)
+            {
+                QuestObjective objective = Info.Objectives[i];
+                if (objective.Type != QuestObjectiveType.MinReputation &&
+                    objective.Type != QuestObjectiveType.IncreaseReputation)
+                    continue;
+
+                _worldPacket.WriteUInt32((uint)Math.Max(0, objective.ObjectID));
+                _worldPacket.WriteUInt32((uint)Math.Max(0, objective.Amount));
+                ++written;
+            }
+
+            while (written++ < 2)
+            {
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(0);
+            }
+        }
+
+        private uint GetWotlk335PlayerKillObjective()
+        {
+            for (int i = 0; i < Info.Objectives.Count; ++i)
+            {
+                QuestObjective objective = Info.Objectives[i];
+                if (objective.Type == QuestObjectiveType.PlayerKills)
+                    return (uint)Math.Max(0, objective.Amount);
+            }
+
+            return 0;
+        }
+
+        private void WriteWotlk335CreatureOrGoObjectives()
+        {
+            int written = 0;
+            for (int i = 0; i < Info.Objectives.Count && written < 4; ++i)
+            {
+                QuestObjective objective = Info.Objectives[i];
+                if (objective.Type != QuestObjectiveType.Monster &&
+                    objective.Type != QuestObjectiveType.GameObject &&
+                    objective.Type != QuestObjectiveType.TalkTo)
+                    continue;
+
+                uint objectId = (uint)Math.Max(0, objective.ObjectID);
+                if (objective.Type == QuestObjectiveType.GameObject)
+                    objectId |= 0x80000000u;
+
+                _worldPacket.WriteUInt32(objectId);
+                _worldPacket.WriteUInt32((uint)Math.Max(0, objective.Amount));
+                _worldPacket.WriteUInt32(0); // item drop id
+                _worldPacket.WriteUInt32(0); // required source count
+                ++written;
+            }
+
+            while (written++ < 4)
+            {
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(0);
+            }
+        }
+
+        private void WriteWotlk335ItemObjectives()
+        {
+            int written = 0;
+            for (int i = 0; i < Info.Objectives.Count && written < 6; ++i)
+            {
+                QuestObjective objective = Info.Objectives[i];
+                if (objective.Type != QuestObjectiveType.Item)
+                    continue;
+
+                _worldPacket.WriteUInt32((uint)Math.Max(0, objective.ObjectID));
+                _worldPacket.WriteUInt32((uint)Math.Max(0, objective.Amount));
+                ++written;
+            }
+
+            while (written++ < 6)
+            {
+                _worldPacket.WriteUInt32(0);
+                _worldPacket.WriteUInt32(0);
+            }
+        }
+
+        private void WriteWotlk335ObjectiveTexts()
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                string description = i < Info.Objectives.Count
+                    ? Info.Objectives[i].Description ?? string.Empty
+                    : string.Empty;
+                _worldPacket.WriteCString(description);
+            }
+        }
+
         public bool Allow;
         public QuestTemplate Info;
         public uint QuestID;
@@ -357,9 +531,14 @@ namespace HermesProxy.World.Server.Packets
         public override void Read()
         {
             CreatureID = _worldPacket.ReadUInt32();
+
+            if (_worldPacket.CanRead() && (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 ||
+                                           _worldPacket.GetCurrentStream().Length - _worldPacket.GetCurrentStream().Position >= sizeof(ulong)))
+                Guid = _worldPacket.ReadGuid();
         }
 
         public uint CreatureID;
+        public WowGuid64 Guid = WowGuid64.Empty;
     }
 
     public class QueryCreatureResponse : ServerPacket
@@ -368,6 +547,55 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340)
+            {
+                if (!Allow)
+                {
+                    _worldPacket.WriteUInt32(CreatureID | 0x80000000u);
+                    return;
+                }
+
+                _worldPacket.WriteUInt32(CreatureID);
+
+                for (int i = 0; i < CreatureConst.MaxCreatureNames; ++i)
+                    _worldPacket.WriteCString(Stats.Name[i] ?? string.Empty);
+
+                _worldPacket.WriteCString(Stats.Title ?? string.Empty);      // sub_name
+                _worldPacket.WriteCString(Stats.CursorName ?? string.Empty); // description
+
+                _worldPacket.WriteUInt32(Stats.Flags[0]); // type_flags
+                _worldPacket.WriteUInt32((uint)Stats.Type); // creature_type
+                _worldPacket.WriteUInt32((uint)Stats.Family); // creature_family
+                _worldPacket.WriteUInt32((uint)Stats.Classification); // creature_rank
+                _worldPacket.WriteUInt32(Stats.ProxyCreatureID[0]); // kill_credit1
+                _worldPacket.WriteUInt32(Stats.ProxyCreatureID[1]); // kill_credit2
+
+                for (int i = 0; i < 4; ++i)
+                {
+                    uint displayId = 0;
+                    if (i < Stats.Display.CreatureDisplay.Count)
+                        displayId = Stats.Display.CreatureDisplay[i].CreatureDisplayID;
+
+                    _worldPacket.WriteUInt32(displayId);
+                }
+
+                _worldPacket.WriteFloat(Stats.HpMulti == 0 ? 1.0f : Stats.HpMulti);
+                _worldPacket.WriteFloat(Stats.EnergyMulti == 0 ? 1.0f : Stats.EnergyMulti);
+                _worldPacket.WriteUInt8((byte)(Stats.Leader ? 1 : 0)); // racial_leader
+
+                for (int i = 0; i < 6; ++i)
+                {
+                    uint itemId = 0;
+                    if (i < Stats.QuestItems.Count)
+                        itemId = Stats.QuestItems[i];
+
+                    _worldPacket.WriteUInt32(itemId);
+                }
+
+                _worldPacket.WriteUInt32(Stats.MovementInfoID);
+                return;
+            }
+
             _worldPacket.WriteUInt32(CreatureID);
             _worldPacket.WriteBit(Allow);
             _worldPacket.FlushBits();
@@ -454,11 +682,20 @@ namespace HermesProxy.World.Server.Packets
         public override void Read()
         {
             GameObjectID = _worldPacket.ReadUInt32();
-            Guid = _worldPacket.ReadPackedGuid128();
+            // WotLK uses a legacy full 64-bit guid here, while modern builds use packed 128.
+            if (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                if (_worldPacket.CanRead())
+                    Guid = _worldPacket.ReadGuid();
+            }
+            else if (_worldPacket.CanRead())
+            {
+                Guid = _worldPacket.ReadPackedGuid128().To64();
+            }
         }
 
         public uint GameObjectID;
-        public WowGuid128 Guid;
+        public WowGuid64 Guid = WowGuid64.Empty;
     }
 
     public class QueryGameObjectResponse : ServerPacket
@@ -467,6 +704,45 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            // entry + optional found block (no guid field / size-prefixed blob wrapper).
+            if (ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340)
+            {
+                if (!Allow)
+                {
+                    _worldPacket.WriteUInt32(GameObjectID | 0x80000000u);
+                    return;
+                }
+
+                _worldPacket.WriteUInt32(GameObjectID);
+                _worldPacket.WriteUInt32(Stats.Type);
+                _worldPacket.WriteUInt32(Stats.DisplayID);
+
+                for (int i = 0; i < 4; i++)
+                    _worldPacket.WriteCString(Stats.Name[i] ?? string.Empty);
+
+                _worldPacket.WriteCString(Stats.IconName ?? string.Empty);
+                _worldPacket.WriteCString(Stats.CastBarCaption ?? string.Empty);
+                _worldPacket.WriteCString(Stats.UnkString ?? string.Empty);
+
+                // 3.3.5 expects 24 GO data dwords in query response payloads.
+                // Legacy 1.12 sources may only provide the first 6; missing entries stay zero.
+                for (int i = 0; i < 24; i++)
+                    _worldPacket.WriteUInt32((uint)Stats.Data[i]);
+
+                _worldPacket.WriteFloat(Stats.Size);
+
+                for (int i = 0; i < 6; i++)
+                {
+                    uint itemId = 0;
+                    if (i < Stats.QuestItems.Count)
+                        itemId = Stats.QuestItems[i];
+
+                    _worldPacket.WriteUInt32(itemId);
+                }
+
+                return;
+            }
+
             _worldPacket.WriteUInt32(GameObjectID);
             _worldPacket.WritePackedGuid128(Guid);
             _worldPacket.WriteBit(Allow);
@@ -617,6 +893,11 @@ namespace HermesProxy.World.Server.Packets
         public bool Allow;
         public float[] Probabilities = new float[8];
         public uint[] BroadcastTextID = new uint[8];
+        public string[] MaleText = new string[8];
+        public string[] FemaleText = new string[8];
+        public uint[] Language = new uint[8];
+        public uint[,] EmoteDelays = new uint[8, 3];
+        public uint[,] Emotes = new uint[8, 3];
     }
 
     public class WhoRequestPkt : ClientPacket

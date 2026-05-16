@@ -116,14 +116,37 @@ namespace HermesProxy.World.Server
             File.WriteAllLines(path, lines);
         }
 
+        private static string SerializeCharacterSettingsStorage(PlayerSettings.InternalStorage settings)
+        {
+            string autoBlockGuildInvites = settings.AutoBlockGuildInvites ? "true" : "false";
+            return "{\r\n  \"AutoBlockGuildInvites\": " + autoBlockGuildInvites + "\r\n}";
+        }
+
+        private static PlayerSettings.InternalStorage DeserializeCharacterSettingsStorage(string json)
+        {
+            var settings = new PlayerSettings.InternalStorage();
+            if (string.IsNullOrWhiteSpace(json))
+                return settings;
+
+            int keyIndex = json.IndexOf("AutoBlockGuildInvites", StringComparison.OrdinalIgnoreCase);
+            if (keyIndex < 0)
+                return settings;
+
+            int colonIndex = json.IndexOf(':', keyIndex);
+            if (colonIndex < 0)
+                return settings;
+
+            string value = json.Substring(colonIndex + 1).TrimStart();
+            settings.AutoBlockGuildInvites = value.StartsWith("true", StringComparison.OrdinalIgnoreCase);
+            return settings;
+        }
+
         public void SaveCharacterSettingsStorage(string realmName, string charName, PlayerSettings.InternalStorage settings)
         {
             var dir = GetAccountCharacterMetaDataDirectory(realmName, charName);
             var path = Path.Combine(dir, SETTINGS_FILE);
 
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            var jsonString = JsonSerializer.Serialize(settings, options);
-            File.WriteAllText(path, jsonString, Encoding.UTF8);
+            File.WriteAllText(path, SerializeCharacterSettingsStorage(settings), Encoding.UTF8);
         }
 
         public PlayerSettings.InternalStorage LoadCharacterSettingsStorage(string realmName, string charName)
@@ -138,10 +161,15 @@ namespace HermesProxy.World.Server
                 return fallback; // Default fallback
             }
 
-            var jsonString = File.ReadAllText(path, Encoding.UTF8);
-            var loadedJson = JsonSerializer.Deserialize<PlayerSettings.InternalStorage>(jsonString);
-
-            return loadedJson;
+            try
+            {
+                return DeserializeCharacterSettingsStorage(File.ReadAllText(path, Encoding.UTF8));
+            }
+            catch (Exception ex)
+            {
+                Log.Print(LogType.Warn, $"Could not read character settings '{path}': {ex.Message}. Using defaults.");
+                return new PlayerSettings.InternalStorage();
+            }
         }
     }
     

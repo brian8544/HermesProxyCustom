@@ -102,6 +102,146 @@ namespace HermesProxy.World.Objects
         public void RemoveMovementFlag(MovementFlagModern f) { Flags &= ~(uint)f; }
         public bool HasMovementFlag(MovementFlagModern f) { return (Flags & (uint)f) != 0; }
 
+        public static WowGuid128 LegacyPackedGuidTo128(WowGuid guid)
+        {
+            if (guid == null || guid.IsEmpty())
+                return WowGuid128.Empty;
+
+            if (guid is WowGuid128 guid128)
+                return guid128;
+
+            // Wrath movement packets often carry only the packed low player guid
+            // (mask + low counter bytes) instead of a full 1.12 high-guid value.
+            // In movement packets that low-only guid is the active player mover.
+            if (guid.GetHighType() == HighGuidType.Null)
+                return WowGuid128.Create(HighGuidType703.Player, guid.GetLowValue());
+
+            switch (guid.GetHighType())
+            {
+                case HighGuidType.Player:
+                    return WowGuid128.Create(HighGuidType703.Player, guid.GetCounter());
+                case HighGuidType.Item:
+                    return WowGuid128.Create(HighGuidType703.Item, guid.GetCounter());
+                case HighGuidType.Transport:
+                case HighGuidType.MOTransport:
+                    return WowGuid128.Create(HighGuidType703.Transport, guid.GetCounter());
+                case HighGuidType.RaidGroup:
+                    return WowGuid128.Create(HighGuidType703.RaidGroup, guid.GetCounter());
+                case HighGuidType.GameObject:
+                    return WowGuid128.Create(HighGuidType703.GameObject, 0, guid.GetEntry(), guid.GetCounter());
+                case HighGuidType.Creature:
+                    return WowGuid128.Create(HighGuidType703.Creature, 0, guid.GetEntry(), guid.GetCounter());
+                case HighGuidType.Pet:
+                    return WowGuid128.Create(HighGuidType703.Pet, 0, guid.GetEntry(), guid.GetCounter());
+                case HighGuidType.Vehicle:
+                    return WowGuid128.Create(HighGuidType703.Vehicle, 0, guid.GetEntry(), guid.GetCounter());
+                case HighGuidType.DynamicObject:
+                    return WowGuid128.Create(HighGuidType703.DynamicObject, 0, guid.GetEntry(), guid.GetCounter());
+                case HighGuidType.Corpse:
+                    return WowGuid128.Create(HighGuidType703.Corpse, 0, guid.GetEntry(), guid.GetCounter());
+            }
+
+            return WowGuid128.Empty;
+        }
+
+        private static bool HasWotlkPitch(MovementFlagWotLK flags, uint flagsExtra)
+        {
+            return flags.HasAnyFlag(MovementFlagWotLK.Swimming | MovementFlagWotLK.Flying)
+                || flagsExtra.HasAnyFlag(MovementFlagExtra.AlwaysAllowPitching);
+        }
+
+        private bool HasTransportGuid()
+        {
+            return TransportGuid != null && !TransportGuid.IsEmpty();
+        }
+
+        public void ReadMovementInfoWotlk(WorldPacket packet)
+        {
+            MovementInfo info = this;
+
+            MovementFlagWotLK flags = (MovementFlagWotLK)packet.ReadUInt32();
+            info.Flags = (uint)flags.CastFlags<MovementFlagModern>();
+            info.FlagsExtra = packet.ReadUInt16();
+            info.MoveTime = packet.ReadUInt32();
+            info.Position = packet.ReadVector3();
+            info.Orientation = packet.ReadFloat();
+
+            if (flags.HasAnyFlag(MovementFlagWotLK.OnTransport))
+            {
+                info.TransportGuid = LegacyPackedGuidTo128(packet.ReadPackedGuid());
+                info.TransportOffset = packet.ReadVector3();
+                info.TransportOrientation = packet.ReadFloat();
+                info.TransportTime = packet.ReadUInt32();
+                info.TransportSeat = packet.ReadInt8();
+
+                if (info.FlagsExtra.HasAnyFlag(MovementFlagExtra.InterpolateMove))
+                    info.TransportTime2 = packet.ReadUInt32();
+            }
+
+            if (HasWotlkPitch(flags, info.FlagsExtra))
+                info.SwimPitch = packet.ReadFloat();
+
+            info.FallTime = packet.ReadUInt32();
+            if (flags.HasAnyFlag(MovementFlagWotLK.Falling))
+            {
+                info.JumpVerticalSpeed = packet.ReadFloat();
+                info.JumpSinAngle = packet.ReadFloat();
+                info.JumpCosAngle = packet.ReadFloat();
+                info.JumpHorizontalSpeed = packet.ReadFloat();
+            }
+
+            if (flags.HasAnyFlag(MovementFlagWotLK.SplineElevation))
+            {
+                info.SplineElevation = packet.ReadFloat();
+                info.HasSplineData = true;
+            }
+
+            info.ValidateMovementInfo();
+        }
+
+        public void WriteMovementInfoWotlk(WorldPacket data)
+        {
+            MovementInfo info = this;
+            uint flags = (uint)(((MovementFlagModern)info.Flags).CastFlags<MovementFlagWotLK>());
+
+            if (info.HasTransportGuid())
+                flags |= (uint)MovementFlagWotLK.OnTransport;
+
+            data.WriteUInt32(flags);
+            data.WriteUInt16((ushort)info.FlagsExtra);
+            data.WriteUInt32(info.MoveTime);
+            data.WriteVector3(info.Position);
+            data.WriteFloat(info.Orientation);
+
+            if (flags.HasAnyFlag(MovementFlagWotLK.OnTransport))
+            {
+                data.WritePackedGuid(info.TransportGuid.To64());
+                data.WriteVector3(info.TransportOffset);
+                data.WriteFloat(info.TransportOrientation);
+                data.WriteUInt32(info.TransportTime);
+                data.WriteInt8(info.TransportSeat);
+
+                if (info.FlagsExtra.HasAnyFlag(MovementFlagExtra.InterpolateMove))
+                    data.WriteUInt32(info.TransportTime2);
+            }
+
+            if (HasWotlkPitch((MovementFlagWotLK)flags, info.FlagsExtra))
+                data.WriteFloat(info.SwimPitch);
+
+            data.WriteUInt32(info.FallTime);
+
+            if (flags.HasAnyFlag(MovementFlagWotLK.Falling))
+            {
+                data.WriteFloat(info.JumpVerticalSpeed);
+                data.WriteFloat(info.JumpSinAngle);
+                data.WriteFloat(info.JumpCosAngle);
+                data.WriteFloat(info.JumpHorizontalSpeed);
+            }
+
+            if (flags.HasAnyFlag(MovementFlagWotLK.SplineElevation))
+                data.WriteFloat(info.SplineElevation);
+        }
+
         public void ReadMovementInfoLegacy(WorldPacket packet, GameSessionData gameState)
         {
             MovementInfo info = this;

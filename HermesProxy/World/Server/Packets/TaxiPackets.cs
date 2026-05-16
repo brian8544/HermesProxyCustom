@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -16,8 +16,10 @@
  */
 
 
+using Framework;
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
@@ -30,6 +32,16 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                // Wrath uses the pre-Cata taxi node status shape: uint64 guid + uint8 status.
+                // The packed-guid/bitfield layout below belongs to newer clients and can
+                // corrupt the next taxi/gossip packet in a 3.3.5a frontend.
+                _worldPacket.WriteGuid(FlightMaster.To64());
+                _worldPacket.WriteUInt8((byte)Status);
+                return;
+            }
+
             _worldPacket.WritePackedGuid128(FlightMaster);
             _worldPacket.WriteBits(Status, 2);
             _worldPacket.FlushBits();
@@ -41,10 +53,21 @@ namespace HermesProxy.World.Server.Packets
 
     public class ShowTaxiNodes : ServerPacket
     {
+        // WotLK's taxi mask is a fixed 12 x uint32 array (48 bytes).  Vanilla sends
+        // fewer mask bytes, so we zero-extend the legacy mask instead of using the
+        // newer variable-count/packed-guid layout.
+        private const int WotlkTaxiMaskBytes = 12 * 4;
+
         public ShowTaxiNodes() : base(Opcode.SMSG_SHOW_TAXI_NODES) { }
 
         public override void Write()
         {
+            if (Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                WriteWotlk335();
+                return;
+            }
+
             _worldPacket.WriteBit(WindowInfo != null);
             _worldPacket.FlushBits();
 
@@ -66,6 +89,43 @@ namespace HermesProxy.World.Server.Packets
             
             foreach (var node in canUseNodes)
                 _worldPacket.WriteUInt8(node);
+        }
+
+        private void WriteWotlk335()
+        {
+            _worldPacket.WriteUInt32(WindowInfo != null ? 1u : 0u);
+            if (WindowInfo != null)
+            {
+                _worldPacket.WriteGuid(WindowInfo.UnitGUID.To64());
+                _worldPacket.WriteUInt32(WindowInfo.CurrentNode);
+            }
+
+            byte[] mask = BuildWotlkTaxiMask();
+            for (int i = 0; i < mask.Length; i += 4)
+            {
+                uint word = (uint)(mask[i] | (mask[i + 1] << 8) | (mask[i + 2] << 16) | (mask[i + 3] << 24));
+                _worldPacket.WriteUInt32(word);
+            }
+        }
+
+        private byte[] BuildWotlkTaxiMask()
+        {
+            byte[] mask = new byte[WotlkTaxiMaskBytes];
+
+            // For 3.3.5a there is one known/available-node mask.  Merge both lists so
+            // a node visible in either legacy mask remains selectable instead of opening
+            // a half-empty taxi map.
+            for (int i = 0; i < mask.Length; i++)
+            {
+                byte value = 0;
+                if (i < CanLandNodes.Count)
+                    value |= CanLandNodes[i];
+                if (i < CanUseNodes.Count)
+                    value |= CanUseNodes[i];
+                mask[i] = value;
+            }
+
+            return mask;
         }
 
         // remove extra zeroes after last node

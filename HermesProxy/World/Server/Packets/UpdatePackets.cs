@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -275,13 +276,270 @@ namespace HermesProxy.World.Server.Packets
             _gameState = gameState;
         }
 
+        public static void ResetLoginBuffer(GameSessionData gameState)
+        {
+            gameState.PendingLoginUpdates.Clear();
+            gameState.PendingLoginDestroys.Clear();
+            gameState.PendingLoginOutOfRangeGuids.Clear();
+            gameState.PlayerObjectSent = false;
+            gameState.IsSettlingWotlkWorldPortObjectStream = false;
+            gameState.WotlkWorldPortObjectStreamSettleStartTick = 0;
+
+            // A teleport/worldport is a fresh client-side object visibility set.
+            // Keep only the player as known; every other object must be created
+            // again before VALUES-only updates are allowed through.
+            gameState.WotlkClientKnownObjectGuids.Clear();
+            if (gameState.CurrentPlayerGuid != WowGuid128.Empty)
+                gameState.WotlkClientKnownObjectGuids.Add(gameState.CurrentPlayerGuid);
+        }
+
         public override void Write()
         {
-            NumObjUpdates = (uint)ObjectUpdates.Count;
-            MapID = (ushort)_gameState.CurrentMapId;
+            bool hasPlayerUpdateInPacket = false;
+            bool hasPlayerCreateInPacket = false;
+            foreach (var update in ObjectUpdates)
+            {
+                if (update.Guid == _gameState.CurrentPlayerGuid)
+                {
+                    hasPlayerUpdateInPacket = true;
+                    if (update.Type == UpdateTypeModern.CreateObject1 || update.Type == UpdateTypeModern.CreateObject2)
+                        hasPlayerCreateInPacket = true;
+                }
+            }
 
-            _worldPacket.WriteUInt32(NumObjUpdates);
-            _worldPacket.WriteUInt16(MapID);
+            bool isWotlkUpdateStream =
+                ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340;
+
+            if (isWotlkUpdateStream && hasPlayerCreateInPacket &&
+                (_gameState.IsWaitingForWorldPortAck || _gameState.IsWaitingForWotlkMovementTeleportAck))
+            {
+                Log.Print(LogType.Debug,
+                    "[UpdateObject/WotLK] Player create arrived during teleport/worldport wait; entering short world-object settle window.");
+                _gameState.IsSettlingWotlkWorldPortObjectStream = true;
+                _gameState.WotlkWorldPortObjectStreamSettleStartTick = Environment.TickCount;
+                _gameState.IsWaitingForWorldPortAck = false;
+                _gameState.IsWaitingForWotlkMovementTeleportAck = false;
+                _gameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
+                _gameState.PendingWotlkMovementTeleportMoveTime = 0;
+                _gameState.PendingWotlkMovementTeleportDestination = new Framework.GameMath.Position();
+                _gameState.PendingWotlkMovementTeleportStartTick = 0;
+                _gameState.PendingLegacyTeleportCounter = null;
+            }
+
+            bool waitingForWotlkWorldPortAck =
+                isWotlkUpdateStream &&
+                (_gameState.IsWaitingForWorldPortAck || _gameState.IsWaitingForWotlkMovementTeleportAck);
+
+            if (waitingForWotlkWorldPortAck &&
+                !hasPlayerCreateInPacket &&
+                (ObjectUpdates.Count > 0 || DestroyedGuids.Count > 0 || OutOfRangeGuids.Count > 0))
+            {
+                _gameState.PendingLoginUpdates.AddRange(ObjectUpdates);
+                _gameState.PendingLoginDestroys.AddRange(DestroyedGuids);
+                _gameState.PendingLoginOutOfRangeGuids.AddRange(OutOfRangeGuids);
+                Log.Print(LogType.Debug, $"[UpdateObject] Buffering teleport/worldport updates until ACK: updates={ObjectUpdates.Count}, destroys={DestroyedGuids.Count}, oor={OutOfRangeGuids.Count}, total buffered={_gameState.PendingLoginUpdates.Count}.");
+                ObjectUpdates.Clear();
+                DestroyedGuids.Clear();
+                OutOfRangeGuids.Clear();
+            }
+
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                !_gameState.PlayerObjectSent)
+            {
+                if (!hasPlayerCreateInPacket && ObjectUpdates.Count > 0)
+                {
+                    _gameState.PendingLoginUpdates.AddRange(ObjectUpdates);
+                    _gameState.PendingLoginDestroys.AddRange(DestroyedGuids);
+                    _gameState.PendingLoginOutOfRangeGuids.AddRange(OutOfRangeGuids);
+                    Log.Print(LogType.Debug, $"[UpdateObject] Buffering {ObjectUpdates.Count} pre-player-create updates (total buffered: {_gameState.PendingLoginUpdates.Count}).");
+                    ObjectUpdates.Clear();
+                    DestroyedGuids.Clear();
+                    OutOfRangeGuids.Clear();
+                }
+
+                if (hasPlayerCreateInPacket && _gameState.PendingLoginUpdates.Count > 0)
+                {
+                    List<ObjectUpdate> merged = new(_gameState.PendingLoginUpdates.Count + ObjectUpdates.Count);
+                    merged.AddRange(_gameState.PendingLoginUpdates);
+                    merged.AddRange(ObjectUpdates);
+                    ObjectUpdates = merged;
+                    DestroyedGuids.AddRange(_gameState.PendingLoginDestroys);
+                    OutOfRangeGuids.AddRange(_gameState.PendingLoginOutOfRangeGuids);
+                    Log.Print(LogType.Debug, $"[UpdateObject] Flushing buffered login/worldport updates: {_gameState.PendingLoginUpdates.Count} buffered + current {ObjectUpdates.Count - _gameState.PendingLoginUpdates.Count}.");
+                    _gameState.PendingLoginUpdates.Clear();
+                    _gameState.PendingLoginDestroys.Clear();
+                    _gameState.PendingLoginOutOfRangeGuids.Clear();
+                }
+
+                if (hasPlayerCreateInPacket)
+                    _gameState.PlayerObjectSent = true;
+            }
+
+            if (ModernVersion.GetUpdateFieldsDefiningBuild() == ClientVersionBuild.V3_3_5a_12340)
+            {
+                Log.Print(LogType.Debug,
+                    $"[UpdateObject] PreWrite: updates={ObjectUpdates.Count}, destroys={DestroyedGuids.Count}, oor={OutOfRangeGuids.Count}, hasPlayerUpdate={hasPlayerUpdateInPacket}, playerSent={_gameState.PlayerObjectSent}, map={_gameState.CurrentMapId}");
+            }
+
+            MapID = (ushort)_gameState.CurrentMapId;
+            ClientVersionBuild targetBuild = ModernVersion.GetUpdateFieldsDefiningBuild();
+
+            if (targetBuild == ClientVersionBuild.V3_3_5a_12340 && ObjectUpdates.Count > 0)
+            {
+                List<ObjectUpdate> filtered = new(ObjectUpdates.Count);
+                HashSet<WowGuid128> knownOrCreatedInPacket = new(_gameState.WotlkClientKnownObjectGuids);
+                if (_gameState.CurrentPlayerGuid != WowGuid128.Empty)
+                    knownOrCreatedInPacket.Add(_gameState.CurrentPlayerGuid);
+
+                foreach (var update in ObjectUpdates)
+                {
+                    bool isCreate = update.Type == UpdateTypeModern.CreateObject1 || update.Type == UpdateTypeModern.CreateObject2;
+
+                    // Guard: create blocks must carry create payload.
+                    if (isCreate && update.CreateData == null)
+                    {
+                        Log.Print(LogType.Warn, $"[UpdateObject/WotLK] Skipping malformed create update without CreateData for guid={update.Guid}.");
+                        continue;
+                    }
+                    // values to a missing client object.
+                    if (update.Type == UpdateTypeModern.Values &&
+                        update.Guid != _gameState.CurrentPlayerGuid &&
+                        !knownOrCreatedInPacket.Contains(update.Guid))
+                    {
+                        Log.Print(LogType.Warn,
+                            $"[UpdateObject/WotLK] Suppressing VALUES update for unknown client object guid={update.Guid}.");
+                        continue;
+                    }
+
+                    HighGuidType highType = update.Guid.GetHighType();
+                    if (highType == HighGuidType.Transport || highType == HighGuidType.MOTransport)
+                    {
+                        uint entry = (uint)(update.ObjectData?.EntryID ?? 0);
+                        sbyte typeId = update.GameObjectData?.TypeID ?? 0;
+                        uint period = entry != 0 ? GameData.GetTransportPeriod(entry) : 0;
+
+                        if ((typeId == 11 || typeId == 15) && period == 0)
+                        {
+                            Log.Print(LogType.Warn,
+                                $"[UpdateObject/WotLK] Skipping transport update with unknown period (entry={entry}, typeId={typeId}, guid={update.Guid}).");
+                            continue;
+                        }
+                    }
+
+                    filtered.Add(update);
+                    if (isCreate)
+                        knownOrCreatedInPacket.Add(update.Guid);
+                }
+
+                if (filtered.Count != ObjectUpdates.Count)
+                    ObjectUpdates = filtered;
+            }
+
+            WorldPacket data = new();
+            uint serializedUpdates = 0;
+            foreach (var update in ObjectUpdates)
+            {
+                update.InitializePlaceholders();
+                switch (targetBuild)
+                {
+                    case ClientVersionBuild.V1_14_0_40237:
+                    {
+                        Objects.Version.V1_14_0_40237.ObjectUpdateBuilder builder = new Objects.Version.V1_14_0_40237.ObjectUpdateBuilder(update, _gameState);
+                        builder.WriteToPacket(data);
+                        serializedUpdates++;
+                        break;
+                    }
+                    case ClientVersionBuild.V1_14_1_40688:
+                    {
+                        Objects.Version.V1_14_1_40688.ObjectUpdateBuilder builder = new Objects.Version.V1_14_1_40688.ObjectUpdateBuilder(update, _gameState);
+                        builder.WriteToPacket(data);
+                        serializedUpdates++;
+                        break;
+                    }
+                    case ClientVersionBuild.V2_5_2_39570:
+                    {
+                        Objects.Version.V2_5_2_39570.ObjectUpdateBuilder builder = new Objects.Version.V2_5_2_39570.ObjectUpdateBuilder(update, _gameState);
+                        builder.WriteToPacket(data);
+                        serializedUpdates++;
+                        break;
+                    }
+                    case ClientVersionBuild.V2_5_3_41750:
+                    {
+                        Objects.Version.V2_5_3_41750.ObjectUpdateBuilder builder = new Objects.Version.V2_5_3_41750.ObjectUpdateBuilder(update, _gameState);
+                        builder.WriteToPacket(data);
+                        serializedUpdates++;
+                        break;
+                    }
+                    case ClientVersionBuild.V3_3_5a_12340:
+                    {
+                        try
+                        {
+                            WorldPacket singleObjectData = new();
+                            Objects.Version.V3_3_5_12340.ObjectUpdateBuilder builder = new Objects.Version.V3_3_5_12340.ObjectUpdateBuilder(update, _gameState);
+                            builder.WriteToPacket(singleObjectData);
+
+                            singleObjectData.FlushBits();
+                            byte[] objectBytes = singleObjectData.GetData();
+                            if (objectBytes.Length == 0)
+                            {
+                                Log.Print(LogType.Warn,
+                                    $"[UpdateObject/WotLK] Skipping empty serialized object block for guid={update.Guid} type={update.Type}.");
+                                break;
+                            }
+
+                            data.WriteBytes(objectBytes);
+                            serializedUpdates++;
+                            if (update.Type == UpdateTypeModern.CreateObject1 || update.Type == UpdateTypeModern.CreateObject2)
+                                _gameState.WotlkClientKnownObjectGuids.Add(update.Guid);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Print(LogType.Error,
+                                $"[UpdateObject/WotLK] Failed to serialize object guid={update.Guid} type={update.Type}: {ex.Message}. Skipping this object.");
+                        }
+                        break;
+                    }
+                    default:
+                        throw new System.ArgumentOutOfRangeException("No object update builder defined for current build.");
+                }
+            }    
+
+            if (targetBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                // 3.3.5a expects legacy-style SMSG_UPDATE_OBJECT layout:
+                // u32 count + [blocks...], with no MapID/bitpacked wrapper.
+                if (DestroyedGuids.Count > 0)
+                    Log.Print(LogType.Warn, $"[UpdateObject/WotLK] Dropping {DestroyedGuids.Count} destroyed guids from FarObjects block; WotLK destroys must use SMSG_DESTROY_OBJECT.");
+
+                foreach (var destroyGuid in DestroyedGuids)
+                    _gameState.WotlkClientKnownObjectGuids.Remove(destroyGuid);
+                foreach (var outOfRangeGuid in OutOfRangeGuids)
+                    _gameState.WotlkClientKnownObjectGuids.Remove(outOfRangeGuid);
+
+                int farCount = OutOfRangeGuids.Count;
+                uint farBlocks = farCount > 0 ? 1u : 0u;
+                NumObjUpdates = serializedUpdates + farBlocks;
+
+                _worldPacket.WriteUInt32(NumObjUpdates);
+
+                if (farCount > 0)
+                {
+                    _worldPacket.WriteUInt8((byte)UpdateTypeLegacy.FarObjects);
+                    _worldPacket.WriteInt32(farCount);
+
+                    foreach (var outOfRangeGuid in OutOfRangeGuids)
+                        _worldPacket.WritePackedGuid(outOfRangeGuid.To64());
+                }
+
+                data.FlushBits();
+                var bytes = data.GetData();
+                Data = bytes;
+                _worldPacket.WriteBytes(bytes);
+
+                Log.Print(LogType.Debug,
+                    $"[UpdateObject] Serialized(WotLK): objUpdates={NumObjUpdates} (obj={serializedUpdates}, farBlocks={farBlocks}, farCount={farCount}), dataPayload={bytes.Length}, map={MapID}");
+                return;
+            }
 
             WorldPacket buffer = new();
             if (buffer.WriteBit(!OutOfRangeGuids.Empty() || !DestroyedGuids.Empty()))
@@ -296,44 +554,14 @@ namespace HermesProxy.World.Server.Packets
                     buffer.WritePackedGuid128(outOfRangeGuid);
             }
 
-            WorldPacket data = new();
-            foreach (var update in ObjectUpdates)
-            {
-                update.InitializePlaceholders();
-                switch (ModernVersion.GetUpdateFieldsDefiningBuild())
-                {
-                    case ClientVersionBuild.V1_14_0_40237:
-                    {
-                        Objects.Version.V1_14_0_40237.ObjectUpdateBuilder builder = new Objects.Version.V1_14_0_40237.ObjectUpdateBuilder(update, _gameState);
-                        builder.WriteToPacket(data);
-                        break;
-                    }
-                    case ClientVersionBuild.V1_14_1_40688:
-                    {
-                        Objects.Version.V1_14_1_40688.ObjectUpdateBuilder builder = new Objects.Version.V1_14_1_40688.ObjectUpdateBuilder(update, _gameState);
-                        builder.WriteToPacket(data);
-                        break;
-                    }
-                    case ClientVersionBuild.V2_5_2_39570:
-                    {
-                        Objects.Version.V2_5_2_39570.ObjectUpdateBuilder builder = new Objects.Version.V2_5_2_39570.ObjectUpdateBuilder(update, _gameState);
-                        builder.WriteToPacket(data);
-                        break;
-                    }
-                    case ClientVersionBuild.V2_5_3_41750:
-                    {
-                        Objects.Version.V2_5_3_41750.ObjectUpdateBuilder builder = new Objects.Version.V2_5_3_41750.ObjectUpdateBuilder(update, _gameState);
-                        builder.WriteToPacket(data);
-                        break;
-                    }
-                    default:
-                        throw new System.ArgumentOutOfRangeException("No object update builder defined for current build.");
-                }
-            }    
-            
-            var bytes = data.GetData();
-            buffer.WriteInt32(bytes.Length);
-            buffer.WriteBytes(bytes);
+            NumObjUpdates = serializedUpdates;
+            _worldPacket.WriteUInt32(NumObjUpdates);
+            _worldPacket.WriteUInt16(MapID);
+
+            data.FlushBits();
+            var modernBytes = data.GetData();
+            buffer.WriteInt32(modernBytes.Length);
+            buffer.WriteBytes(modernBytes);
             Data = buffer.GetData();
 
             _worldPacket.WriteBytes(Data);
@@ -382,6 +610,22 @@ namespace HermesProxy.World.Server.Packets
 
         public int Power;
         public byte PowerType;
+    }
+
+    public class RawServerPacket : ServerPacket
+    {
+        private readonly byte[] _payload;
+
+        public RawServerPacket(Opcode opcode, ConnectionType connectionType, byte[] payload) : base(opcode, connectionType)
+        {
+            _payload = payload ?? Array.Empty<byte>();
+        }
+
+        public override void Write()
+        {
+            if (_payload.Length > 0)
+                _worldPacket.WriteBytes(_payload);
+        }
     }
 
     public class ObjectUpdateFailed : ClientPacket

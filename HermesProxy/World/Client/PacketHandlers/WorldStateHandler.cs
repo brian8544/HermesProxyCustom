@@ -13,6 +13,8 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_INIT_WORLD_STATES)]
         void HandleInitWorldStates(WorldPacket packet)
         {
+            bool forwardedRawWotlk = TryForwardLegacyPayloadToWotlkClient(packet);
+
             InitWorldStates states = new InitWorldStates();
             states.MapID = packet.ReadUInt32();
             GetSession().GameState.CurrentMapId = states.MapID;
@@ -35,13 +37,17 @@ namespace HermesProxy.World.Client
                 else if (variable == (uint)WorldStates.WsgFlagStateHorde)
                     GetSession().GameState.HasWsgHordeFlagCarrier = value == 2;
             }
-            states.AddClassicStates();
-            SendPacketToClient(states);
 
-            // These packets don't exist in old versions.
-            if (LegacyVersion.ExpansionVersion <= 1 || ModernVersion.ExpansionVersion <= 1)
-                SendPacketToClient(new SetupCurrency());
-            SendPacketToClient(new AllAccountCriteria());
+            if (!forwardedRawWotlk)
+            {
+                states.AddClassicStates();
+                SendPacketToClient(states);
+
+                // These packets don't exist in old versions.
+                if (LegacyVersion.ExpansionVersion <= 1 || ModernVersion.ExpansionVersion <= 1)
+                    SendPacketToClient(new SetupCurrency());
+                SendPacketToClient(new AllAccountCriteria());
+            }
 
             if (GetSession().GameState.HasWsgHordeFlagCarrier || GetSession().GameState.HasWsgAllyFlagCarrier)
             {

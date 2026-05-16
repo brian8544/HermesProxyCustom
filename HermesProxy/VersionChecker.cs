@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.World.Enums;
 using HermesProxy.Enums;
 using System;
@@ -37,6 +37,7 @@ namespace HermesProxy
         {
             switch (modernVersion)
             {
+                case ClientVersionBuild.V3_3_5a_12340:
                 case ClientVersionBuild.V2_5_2_39570:
                 case ClientVersionBuild.V2_5_2_39618:
                 case ClientVersionBuild.V2_5_2_39926:
@@ -101,6 +102,7 @@ namespace HermesProxy
             {
                 1 => ClientVersionBuild.V1_12_1_5875,
                 2 => ClientVersionBuild.V2_4_3_8606,
+                3 => ClientVersionBuild.V1_12_1_5875, // WotLK frontend mode targets Vanilla backend
                 _ => ClientVersionBuild.Zero,
             };
         }
@@ -228,13 +230,13 @@ namespace HermesProxy
             bool loaded = false;
             foreach (Type enumType in enumTypes)
             {
-                string vTypeString =
-                    $"HermesProxy.World.Enums.{ufDefiningBuild.ToString()}.{enumType.Name}";
+                string buildNamespace = ufDefiningBuild.ToString();
+                string vTypeString = $"HermesProxy.World.Enums.{buildNamespace}.{enumType.Name}";
                 Type vEnumType = Assembly.GetExecutingAssembly().GetType(vTypeString);
                 if (vEnumType == null)
                 {
-                    vTypeString =
-                        $"HermesProxy.World.Enums.{ufDefiningBuild.ToString()}.{enumType.Name}";
+                    string normalizedBuildNamespace = System.Text.RegularExpressions.Regex.Replace(buildNamespace, @"_(\d+)[A-Za-z]_", "_$1_");
+                    vTypeString = $"HermesProxy.World.Enums.{normalizedBuildNamespace}.{enumType.Name}";
                     vEnumType = Assembly.GetExecutingAssembly().GetType(vTypeString);
                     if (vEnumType == null)
                         continue;   // versions prior to 4.3.0 do not have AreaTriggerField
@@ -349,14 +351,14 @@ namespace HermesProxy
             string str = VersionString;
             str = str.Replace("V", "");
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
         }
         private static byte GetMajorPatchVersion()
         {
             string str = VersionString;
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
         }
         private static byte GetMinorPatchVersion()
         {
@@ -364,7 +366,16 @@ namespace HermesProxy
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
+        }
+
+        private static byte ParseVersionSegment(string segment)
+        {
+            string numericPrefix = new string(segment.TakeWhile(char.IsDigit).ToArray());
+            if (string.IsNullOrEmpty(numericPrefix))
+                return 0;
+
+            return (byte)UInt32.Parse(numericPrefix);
         }
 
         public static bool InVersion(ClientVersionBuild build1, ClientVersionBuild build2)
@@ -527,6 +538,8 @@ namespace HermesProxy
         {
             switch (version)
             {
+                case ClientVersionBuild.V3_3_5a_12340:
+                    return ClientVersionBuild.V3_3_5a_12340;
                 case ClientVersionBuild.V1_14_0_39802:
                 case ClientVersionBuild.V1_14_0_39958:
                 case ClientVersionBuild.V1_14_0_40140:
@@ -604,13 +617,13 @@ namespace HermesProxy
             bool loaded = false;
             foreach (Type enumType in enumTypes)
             {
-                string vTypeString =
-                    $"HermesProxy.World.Enums.{ufDefiningBuild.ToString()}.{enumType.Name}";
+                string buildNamespace = ufDefiningBuild.ToString();
+                string vTypeString = $"HermesProxy.World.Enums.{buildNamespace}.{enumType.Name}";
                 Type vEnumType = Assembly.GetExecutingAssembly().GetType(vTypeString);
                 if (vEnumType == null)
                 {
-                    vTypeString =
-                        $"HermesProxy.World.Enums.{ufDefiningBuild.ToString()}.{enumType.Name}";
+                    string normalizedBuildNamespace = System.Text.RegularExpressions.Regex.Replace(buildNamespace, @"_(\d+)[A-Za-z]_", "_$1_");
+                    vTypeString = $"HermesProxy.World.Enums.{normalizedBuildNamespace}.{enumType.Name}";
                     vEnumType = Assembly.GetExecutingAssembly().GetType(vTypeString);
                     if (vEnumType == null)
                         continue;   // versions prior to 4.3.0 do not have AreaTriggerField
@@ -701,6 +714,8 @@ namespace HermesProxy
         {
             switch (Opcodes.GetOpcodesDefiningBuild(Build))
             {
+                case ClientVersionBuild.V3_3_5a_12340:
+                    return typeof(World.Enums.V3_3_5_12340.ResponseCodes);
                 case ClientVersionBuild.V2_5_2_39570:
                     return typeof(World.Enums.V2_5_2_39570.ResponseCodes);
                 case ClientVersionBuild.V2_5_3_41750:
@@ -725,14 +740,14 @@ namespace HermesProxy
             string str = VersionString;
             str = str.Replace("V", "");
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
         }
         private static byte GetMajorPatchVersion()
         {
             string str = VersionString;
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
         }
         private static byte GetMinorPatchVersion()
         {
@@ -740,7 +755,16 @@ namespace HermesProxy
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(str.IndexOf('_') + 1);
             str = str.Substring(0, str.IndexOf("_"));
-            return (byte)UInt32.Parse(str);
+            return ParseVersionSegment(str);
+        }
+
+        private static byte ParseVersionSegment(string segment)
+        {
+            string numericPrefix = new string(segment.TakeWhile(char.IsDigit).ToArray());
+            if (string.IsNullOrEmpty(numericPrefix))
+                return 0;
+
+            return (byte)UInt32.Parse(numericPrefix);
         }
 
         public static bool AddedInVersion(byte expansion, byte major, byte minor)
@@ -762,10 +786,15 @@ namespace HermesProxy
 
         public static bool AddedInVersion(byte retailExpansion, byte retailMajor, byte retailMinor, byte classicEraExpansion, byte classicEraMajor, byte classicEraMinor, byte classicExpansion, byte classicMajor, byte classicMinor)
         {
-            if (ExpansionVersion == 1)
-                return AddedInVersion(classicEraExpansion, classicEraMajor, classicEraMinor);
-            else if (ExpansionVersion == 2 || ExpansionVersion == 3)
-                return AddedInVersion(classicExpansion, classicMajor, classicMinor);
+            // Only route through classic-era/classic-expansion gates for actual classic clients
+            // (1.13+/2.5+/3.4+). Legacy 1.x/2.x/3.3.x clients must use retail gate values.
+            if (IsClassicVersionBuild())
+            {
+                if (ExpansionVersion == 1)
+                    return AddedInVersion(classicEraExpansion, classicEraMajor, classicEraMinor);
+                else if (ExpansionVersion == 2 || ExpansionVersion == 3)
+                    return AddedInVersion(classicExpansion, classicMajor, classicMinor);
+            }
 
             return AddedInVersion(retailExpansion, retailMajor, retailMinor);
         }
@@ -777,6 +806,9 @@ namespace HermesProxy
 
         public static bool AddedInClassicVersion(byte classicEraExpansion, byte classicEraMajor, byte classicEraMinor, byte classicExpansion, byte classicMajor, byte classicMinor)
         {
+            if (!IsClassicVersionBuild())
+                return false;
+
             if (ExpansionVersion == 1)
                 return AddedInVersion(classicEraExpansion, classicEraMajor, classicEraMinor);
             else if (ExpansionVersion == 2 || ExpansionVersion == 3)
@@ -1014,9 +1046,30 @@ namespace HermesProxy
 
         public static byte ConvertResponseCodesValue(byte legacyValue)
         {
-            string legacyName = Enum.ToObject(LegacyVersion.GetResponseCodesEnum(), legacyValue).ToString();
-            byte modernValue = (byte)Enum.Parse(GetResponseCodesEnum(), legacyName);
-            return modernValue;
+            Type legacyEnum = LegacyVersion.GetResponseCodesEnum();
+            Type modernEnum = GetResponseCodesEnum();
+            if (legacyEnum == null || modernEnum == null)
+                return legacyValue;
+
+            string legacyName = Enum.GetName(legacyEnum, legacyValue);
+            if (!string.IsNullOrEmpty(legacyName))
+            {
+                try
+                {
+                    if (Enum.TryParse(modernEnum, legacyName, out object modernByName))
+                        return (byte)modernByName;
+                }
+                catch (Exception ex)
+                {
+                    Log.Print(LogType.Warn, $"ConvertResponseCodesValue: failed by-name conversion '{legacyName}' ({legacyValue}): {ex.Message}");
+                }
+            }
+
+            if (Enum.IsDefined(modernEnum, (int)legacyValue))
+                return legacyValue;
+
+            Log.Print(LogType.Warn, $"ConvertResponseCodesValue: unmapped legacy response code {legacyValue}, falling back to Failure.");
+            return (byte)Enum.Parse(modernEnum, "Failure");
         }
 
         public static byte ConvertSocketColor(byte legacyValue)

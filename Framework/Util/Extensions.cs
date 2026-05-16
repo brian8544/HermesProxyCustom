@@ -146,10 +146,14 @@ namespace System
 
         public static string ToHexString(this byte[] byteArray, bool reverse = false)
         {
-            if (reverse)
-                return byteArray.Reverse().Aggregate("", (current, b) => current + b.ToString("X2"));
-            else
-                return byteArray.Aggregate("", (current, b) => current + b.ToString("X2"));
+            if (!reverse)
+                return Convert.ToHexString(byteArray);
+
+            byte[] reversed = new byte[byteArray.Length];
+            for (int i = 0, j = byteArray.Length - 1; i < byteArray.Length; i++, j--)
+                reversed[i] = byteArray[j];
+
+            return Convert.ToHexString(reversed);
         }
 
         static uint LeftRotate(this uint value, int shiftCount)

@@ -31,9 +31,11 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            QuestGiverGUID = _worldPacket.ReadPackedGuid128();
+            QuestGiverGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
             QuestID = _worldPacket.ReadUInt32();
-            RespondToGiver = _worldPacket.HasBit();
+            RespondToGiver = !WotlkMovementPacketCompat.IsWotlkFrontendBuild() && _worldPacket.HasBit();
         }
 
         public WowGuid128 QuestGiverGUID;
@@ -261,9 +263,11 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            QuestGiverGUID = _worldPacket.ReadPackedGuid128();
+            QuestGiverGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
             QuestID = _worldPacket.ReadUInt32();
-            StartCheat = _worldPacket.HasBit();
+            StartCheat = !WotlkMovementPacketCompat.IsWotlkFrontendBuild() && _worldPacket.HasBit();
         }
 
         public WowGuid128 QuestGiverGUID;
@@ -290,7 +294,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            QuestGiverGUID = _worldPacket.ReadPackedGuid128();
+            QuestGiverGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 QuestGiverGUID;
@@ -355,7 +361,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            QuestGiverGUID = _worldPacket.ReadPackedGuid128();
+            QuestGiverGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 QuestGiverGUID;
@@ -463,7 +471,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            QuestGiverGUID = _worldPacket.ReadPackedGuid128();
+            QuestGiverGUID = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
             QuestID = _worldPacket.ReadUInt32();
         }
 
@@ -554,6 +564,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                QuestGiverGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                QuestID = _worldPacket.ReadUInt32();
+                RewardIndex = _worldPacket.ReadInt32();
+                return;
+            }
+
             QuestGiverGUID = _worldPacket.ReadPackedGuid128();
             QuestID = _worldPacket.ReadUInt32();
             Choice.Read(_worldPacket);
@@ -561,6 +579,7 @@ namespace HermesProxy.World.Server.Packets
 
         public WowGuid128 QuestGiverGUID;
         public uint QuestID;
+        public int RewardIndex = -1;
         public QuestChoiceItem Choice = new();
     }
 
@@ -641,6 +660,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                QuestGiverGUID = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+                QuestID = _worldPacket.ReadUInt32();
+                FromScript = false;
+                return;
+            }
+
             QuestGiverGUID = _worldPacket.ReadPackedGuid128();
             QuestID = _worldPacket.ReadUInt32();
             FromScript = _worldPacket.HasBit();

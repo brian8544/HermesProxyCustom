@@ -34,6 +34,7 @@ namespace Framework.Networking
     {
         Socket _socket;
         IPEndPoint _remoteIPEndPoint;
+        bool _closed;
 
         SocketAsyncEventArgs receiveSocketAsyncEventArgsWithCallback;
         SocketAsyncEventArgs receiveSocketAsyncEventArgs;
@@ -55,7 +56,14 @@ namespace Framework.Networking
 
         public virtual void Dispose()
         {
-            _socket.Dispose();
+            try
+            {
+                _socket?.Dispose();
+            }
+            catch
+            {
+                // Ignore dispose races during disconnect cleanup.
+            }
         }
 
         public abstract void Accept();
@@ -75,10 +83,21 @@ namespace Framework.Networking
             if (!IsOpen())
                 return;
 
-            receiveSocketAsyncEventArgsWithCallback.Completed += (sender, args) => callback(args);
-            receiveSocketAsyncEventArgsWithCallback.SetBuffer(0, 0x4000);
-            if (!_socket.ReceiveAsync(receiveSocketAsyncEventArgsWithCallback))
-                callback(receiveSocketAsyncEventArgsWithCallback);
+            try
+            {
+                receiveSocketAsyncEventArgsWithCallback.Completed += (sender, args) => callback(args);
+                receiveSocketAsyncEventArgsWithCallback.SetBuffer(0, 0x4000);
+                if (!_socket.ReceiveAsync(receiveSocketAsyncEventArgsWithCallback))
+                    callback(receiveSocketAsyncEventArgsWithCallback);
+            }
+            catch (ObjectDisposedException)
+            {
+                CloseSocket();
+            }
+            catch (SocketException)
+            {
+                CloseSocket();
+            }
         }
 
         public void AsyncRead()
@@ -86,9 +105,20 @@ namespace Framework.Networking
             if (!IsOpen())
                 return;
 
-            receiveSocketAsyncEventArgs.SetBuffer(0, 0x4000);
-            if (!_socket.ReceiveAsync(receiveSocketAsyncEventArgs))
-                ProcessReadAsync(receiveSocketAsyncEventArgs);
+            try
+            {
+                receiveSocketAsyncEventArgs.SetBuffer(0, 0x4000);
+                if (!_socket.ReceiveAsync(receiveSocketAsyncEventArgs))
+                    ProcessReadAsync(receiveSocketAsyncEventArgs);
+            }
+            catch (ObjectDisposedException)
+            {
+                CloseSocket();
+            }
+            catch (SocketException)
+            {
+                CloseSocket();
+            }
         }
 
         void ProcessReadAsync(SocketAsyncEventArgs args)
@@ -115,18 +145,46 @@ namespace Framework.Networking
             if (!IsOpen())
                 return;
 
-            _socket.Send(data);
+            try
+            {
+                int totalSent = 0;
+                while (totalSent < data.Length)
+                {
+                    int sent = _socket.Send(data, totalSent, data.Length - totalSent, SocketFlags.None);
+                    if (sent <= 0)
+                    {
+                        CloseSocket();
+                        return;
+                    }
+
+                    totalSent += sent;
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                CloseSocket();
+            }
+            catch (SocketException)
+            {
+                CloseSocket();
+            }
         }
 
         public void CloseSocket()
         {
-            if (_socket == null || !_socket.Connected)
+            if (_closed)
                 return;
+
+            _closed = true;
 
             try
             {
-                _socket.Shutdown(SocketShutdown.Both);
-                _socket.Close();
+                if (_socket != null)
+                {
+                    if (_socket.Connected)
+                        _socket.Shutdown(SocketShutdown.Both);
+                    _socket.Close();
+                }
             }
             catch (Exception ex)
             {
@@ -138,7 +196,7 @@ namespace Framework.Networking
 
         public virtual void OnClose() { Dispose(); }
 
-        public bool IsOpen() { return _socket.Connected; }
+        public bool IsOpen() { return !_closed && _socket != null; }
 
         public void SetNoDelay(bool enable)
         {

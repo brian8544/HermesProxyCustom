@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using Framework.Constants;
 using Framework.Logging;
@@ -133,10 +133,19 @@ namespace HermesProxy.World.Server
             if (GetSession().AuthClient != null)
                 GetSession().AuthClient.Disconnect();
 
-            SendConnectToInstance(ConnectToSerial.WorldAttempt1);
+            if (Framework.Settings.ClientBuild != ClientVersionBuild.V3_3_5a_12340)
+                SendConnectToInstance(ConnectToSerial.WorldAttempt1);
+            else
+            {
+                GetSession().RealmSocket = this;
+                GetSession().InstanceSocket = this;
+            }
+
             GetSession().GameState.IsConnectedToInstance = true;
             GetSession().GameState.IsFirstEnterWorld = true;
             GetSession().GameState.CurrentPlayerGuid = playerLogin.Guid;
+            GetSession().GameState.HasCurrentPlayerPosition = false;
+            Packets.UpdateObject.ResetLoginBuffer(GetSession().GameState);
             GetSession().GameState.CurrentPlayerInfo = GetSession().GameState.OwnCharacters.Single(x => x.CharacterGuid == playerLogin.Guid);
             GetSession().GameState.CurrentPlayerStorage.LoadCurrentPlayer();
 
@@ -195,6 +204,23 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_SET_ACTION_BUTTON)]
         void HandleSetActionButton(SetActionButton button)
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // 1.12 backends only support 120 action slots (0..119).
+                // WotLK clients send additional slots for modern bars/totems.
+                if (button.Index >= 120)
+                {
+                    Log.Print(LogType.Debug, $"[WotLK] Dropping CMSG_SET_ACTION_BUTTON for unsupported legacy slot {button.Index} (action={button.ParsedAction}, type={button.ParsedType}).");
+                    return;
+                }
+
+                WorldPacket wotlkPacket = new WorldPacket(Opcode.CMSG_SET_ACTION_BUTTON);
+                wotlkPacket.WriteUInt8(button.Index);
+                wotlkPacket.WriteUInt32(button.PackedData);
+                SendPacketToServer(wotlkPacket);
+                return;
+            }
+
             WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_ACTION_BUTTON);
             packet.WriteUInt8(button.Index);
             packet.WriteUInt16(button.Action);

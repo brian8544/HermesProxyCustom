@@ -16,15 +16,28 @@ namespace HermesProxy.World.Server
             WorldPacket packet = new WorldPacket(Opcode.CMSG_BUY_ITEM);
             packet.WriteGuid(item.VendorGUID.To64());
             packet.WriteUInt32(item.Item.ItemID);
-            uint quantity = item.Quantity / GetSession().GameState.GetItemBuyCount(item.Item.ItemID);
-            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
+            uint buyCount = GetSession().GameState.GetItemBuyCount(item.Item.ItemID);
+            uint quantity = buyCount > 0 ? item.Quantity / buyCount : item.Quantity;
+            if (quantity == 0)
+                quantity = 1;
+
+            if (!WotlkMovementPacketCompat.IsWotlkFrontendBuild() &&
+                LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
             {
                 packet.WriteUInt32(item.Slot);
                 packet.WriteUInt32(quantity);
             }
-            else
+            else if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // Vanilla/TBC buy packet expects: item + amount + unknown1 (commonly constant 1).
                 packet.WriteUInt8((byte)quantity);
-            packet.WriteUInt8((byte)item.BagSlot);
+                packet.WriteUInt8(1);
+            }
+            else
+            {
+                packet.WriteUInt8((byte)quantity);
+                packet.WriteUInt8((byte)item.BagSlot);
+            }
             SendPacketToServer(packet);
         }
 
@@ -34,7 +47,9 @@ namespace HermesProxy.World.Server
             WorldPacket packet = new WorldPacket(Opcode.CMSG_SELL_ITEM);
             packet.WriteGuid(item.VendorGUID.To64());
             packet.WriteGuid(item.ItemGUID.To64());
-            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192)) // not sure when this was changed exactly
+            // WotLK frontend -> legacy backend must stay on legacy amount width.
+            if (!WotlkMovementPacketCompat.IsWotlkFrontendBuild() &&
+                LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192)) // not sure when this was changed exactly
                 packet.WriteUInt32(item.Amount);
             else
                 packet.WriteUInt8((byte)item.Amount);

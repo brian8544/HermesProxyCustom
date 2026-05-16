@@ -381,6 +381,7 @@ namespace HermesProxy.World.Server.Packets
         {
             _worldPacket.WriteInt8(PartyIndex);
             _worldPacket.WriteBits(Name.GetByteCount(), 9);
+            _worldPacket.FlushBits();
             _worldPacket.WriteString(Name);
         }
 

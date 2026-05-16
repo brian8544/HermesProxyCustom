@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using Framework.GameMath;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
@@ -21,7 +21,19 @@ namespace HermesProxy.World.Client
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_4_0_8089))
                 gossip.GossipID = packet.ReadInt32();
             else
-                gossip.GossipID = (int)gossip.GossipGUID.GetEntry();
+            {
+                if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+                {
+                    // Vanilla/Classic SMSG_GOSSIP_MESSAGE has no menuId field.
+                    // Do not synthesize creature entry as menuId for 3.3.5a, it
+                    // can treat this as a real gossip menu id and hide options.
+                    gossip.GossipID = 0;
+                }
+                else
+                {
+                    gossip.GossipID = (int)gossip.GossipGUID.GetEntry();
+                }
+            }
 
             gossip.TextID = packet.ReadInt32();
 

@@ -18,6 +18,8 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using Framework;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -389,6 +391,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                Cast.ReadLegacyWotlk(_worldPacket);
+                return;
+            }
+
             Cast.Read(_worldPacket);
         }
 
@@ -423,6 +431,33 @@ namespace HermesProxy.World.Server.Packets
         {
             PackSlot = _worldPacket.ReadUInt8();
             Slot = _worldPacket.ReadUInt8();
+
+            // WotLK CMSG_USE_ITEM has its own legacy layout. Reading it as
+            // modern data corrupts spell/id fields and causes frontend "Internal Error"
+            // on item use (e.g. Hearthstone).
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                // Wrath layout:
+                // bag, slot, castCount, spellId, itemGuid, glyphIndex, castFlags, targets...
+                // Vanilla forwarding still needs a spell index; handlers derive it from
+                // item+spellId when Misc[0] is zero. Wrath item-use packets do not
+                // include a cast GUID, so keep the cast id explicitly non-null.
+                Cast.CastID = WowGuid128.Empty;
+                Cast.Misc[0] = 0;
+                Cast.Misc[1] = _worldPacket.ReadUInt8(); // cast count
+                Cast.SpellID = _worldPacket.ReadUInt32();
+                // In 3.3.5 CMSG_USE_ITEM, item is a full Guid (8 bytes), not packed.
+                CastItem = MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid());
+
+                _worldPacket.ReadUInt32(); // glyph index (unused for legacy forwarding)
+
+                Cast.ReadLegacyWotlkClientCastFlags(_worldPacket);
+
+                Cast.SpellXSpellVisualID = GameData.GetSpellVisual(Cast.SpellID);
+                Cast.Target.ReadLegacyWotlk(_worldPacket);
+                return;
+            }
+
             CastItem = _worldPacket.ReadPackedGuid128();
             Cast.Read(_worldPacket);
         }
@@ -435,6 +470,38 @@ namespace HermesProxy.World.Server.Packets
 
     public class SpellCastRequest
     {
+        public void ReadLegacyWotlk(WorldPacket data)
+        {
+            // Wrath CMSG_CAST_SPELL format:
+            // castCount (u8), spellId (u32), castFlags (u8), targets...
+            // No cast guid is present; handlers synthesize one when needed.
+            CastID = WowGuid128.Empty;
+            Misc[0] = 0;
+            Misc[1] = data.ReadUInt8(); // cast count
+            SpellID = data.ReadUInt32();
+            ReadLegacyWotlkClientCastFlags(data);
+            SpellXSpellVisualID = GameData.GetSpellVisual(SpellID);
+            Target.ReadLegacyWotlk(data);
+        }
+
+        public void ReadLegacyWotlkClientCastFlags(WorldPacket data)
+        {
+            SendCastFlags = data.ReadUInt8();
+            if ((SendCastFlags & 0x02) == 0) // ClientCastFlags.EXTRA
+                return;
+
+            data.ReadFloat(); // elevation
+            data.ReadFloat(); // speed
+            byte movementData = data.ReadUInt8();
+            if (movementData != 0)
+            {
+                data.ReadUInt32(); // movement opcode
+                data.ReadPackedGuid(); // movement guid
+                MovementInfo move = new();
+                move.ReadMovementInfoWotlk(data);
+            }
+        }
+
         public void Read(WorldPacket data)
         {
             CastID = data.ReadPackedGuid128();
@@ -822,6 +889,46 @@ namespace HermesProxy.World.Server.Packets
 
     public class SpellTargetData
     {
+        public void ReadLegacyWotlk(WorldPacket data)
+        {
+            Flags = (SpellCastTargetFlags)data.ReadUInt32();
+
+            if (Flags.HasAnyFlag(SpellCastTargetFlags.Unit | SpellCastTargetFlags.CorpseEnemy | SpellCastTargetFlags.GameObject |
+                SpellCastTargetFlags.CorpseAlly | SpellCastTargetFlags.UnitMinipet))
+                Unit = MovementInfo.LegacyPackedGuidTo128(data.ReadPackedGuid());
+            else
+                Unit = WowGuid128.Empty;
+
+            if (Flags.HasAnyFlag(SpellCastTargetFlags.Item | SpellCastTargetFlags.TradeItem))
+                Item = MovementInfo.LegacyPackedGuidTo128(data.ReadPackedGuid());
+            else
+                Item = WowGuid128.Empty;
+
+            if (Flags.HasAnyFlag(SpellCastTargetFlags.SourceLocation))
+            {
+                SrcLocation = new TargetLocation();
+                SrcLocation.Transport = MovementInfo.LegacyPackedGuidTo128(data.ReadPackedGuid());
+                SrcLocation.Location = data.ReadVector3();
+            }
+            else
+            {
+                SrcLocation = null;
+            }
+
+            if (Flags.HasAnyFlag(SpellCastTargetFlags.DestLocation))
+            {
+                DstLocation = new TargetLocation();
+                DstLocation.Transport = MovementInfo.LegacyPackedGuidTo128(data.ReadPackedGuid());
+                DstLocation.Location = data.ReadVector3();
+            }
+            else
+            {
+                DstLocation = null;
+            }
+
+            Name = Flags.HasAnyFlag(SpellCastTargetFlags.String) ? data.ReadCString() : string.Empty;
+        }
+
         public void Read(WorldPacket data)
         {
             Flags = (SpellCastTargetFlags)data.ReadBits<uint>(26);
@@ -882,8 +989,8 @@ namespace HermesProxy.World.Server.Packets
         }
 
         public SpellCastTargetFlags Flags;
-        public WowGuid128 Unit;
-        public WowGuid128 Item;
+        public WowGuid128 Unit = WowGuid128.Empty;
+        public WowGuid128 Item = WowGuid128.Empty;
         public TargetLocation SrcLocation;
         public TargetLocation DstLocation;
         public float? Orientation;

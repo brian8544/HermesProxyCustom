@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -20,7 +20,10 @@ namespace HermesProxy.World.Client
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_0_2_9056))
                 quest.InformUnit = packet.ReadGuid().To128(GetSession().GameState);
             else
-                quest.InformUnit = quest.QuestGiverGUID;
+                // Vanilla quest details do not contain the WotLK/TBC divider/inform
+                // guid field.  For direct NPC quests AzerothCore sends an empty
+                // divider guid, not the quest giver guid.
+                quest.InformUnit = WowGuid128.Empty;
 
             quest.QuestID = packet.ReadUInt32();
             quest.QuestTitle = packet.ReadCString();
@@ -80,6 +83,7 @@ namespace HermesProxy.World.Client
             }
 
             var rewardCount = packet.ReadUInt32();
+            rewards.ItemCount = rewardCount;
             for (var i = 0; i < rewardCount; i++)
             {
                 rewards.ItemID[i] = packet.ReadUInt32();
@@ -136,7 +140,10 @@ namespace HermesProxy.World.Client
         {
             QuestGiverStatusPkt response = new QuestGiverStatusPkt();
             response.QuestGiver.Guid = packet.ReadGuid().To128(GetSession().GameState);
-            response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(packet.ReadUInt8());
+            byte rawStatus = LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180)
+                ? (byte)packet.ReadUInt32()
+                : packet.ReadUInt8();
+            response.QuestGiver.Status = LegacyVersion.ConvertQuestGiverStatus(rawStatus);
             SendPacketToClient(response);
         }
 
@@ -149,7 +156,10 @@ namespace HermesProxy.World.Client
             {
                 QuestGiverInfo info = new();
                 info.Guid = packet.ReadGuid().To128(GetSession().GameState);
-                info.Status = LegacyVersion.ConvertQuestGiverStatus(packet.ReadUInt8());
+                byte rawStatus = LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180)
+                    ? (byte)packet.ReadUInt32()
+                    : packet.ReadUInt8();
+                info.Status = LegacyVersion.ConvertQuestGiverStatus(rawStatus);
                 response.QuestGivers.Add(info);
             }
             SendPacketToClient(response);
@@ -178,6 +188,22 @@ namespace HermesProxy.World.Client
         {
             ClientGossipQuest quest = new();
             quest.QuestID = packet.ReadUInt32();
+
+            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+            {
+                // Vanilla/Classic gossip quest entries are:
+                // questId(u32), questIcon(u32), questLevel(u32), title(CString).
+                // They are not quest-giver status values.  Reading questIcon as a
+                // status made the Wrath gossip UI show numeric/junk text and hide
+                // available quests.
+                quest.QuestType = (int)packet.ReadUInt32();
+                quest.QuestLevel = packet.ReadInt32();
+                quest.QuestFlags = 0;
+                quest.Repeatable = false;
+                quest.QuestTitle = packet.ReadCString();
+                return quest;
+            }
+
             QuestGiverStatusModern dialogStatus = LegacyVersion.ConvertQuestGiverStatus((byte)packet.ReadInt32());
 
             if (dialogStatus.HasAnyFlag(QuestGiverStatusModern.Available | QuestGiverStatusModern.AvailableCovenantCalling | QuestGiverStatusModern.AvailableJourney | QuestGiverStatusModern.AvailableLegendaryQuest | QuestGiverStatusModern.AvailableRep | QuestGiverStatusModern.LowLevelAvailable | QuestGiverStatusModern.LowLevelAvailableRep))
@@ -273,6 +299,7 @@ namespace HermesProxy.World.Client
                 QuestDescEmote emote = new();
                 emote.Delay = packet.ReadUInt32();
                 emote.Type = packet.ReadUInt32();
+                quest.QuestData.Emotes.Add(emote);
             }
 
             ReadExtraQuestInfo(packet, quest.QuestData.Rewards, true);

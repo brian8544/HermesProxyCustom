@@ -2,6 +2,7 @@
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
+using Framework.Logging;
 using System;
 using System.Collections.Generic;
 
@@ -272,6 +273,12 @@ namespace HermesProxy.World.Client
         {
             GroupNewLeader party = new GroupNewLeader();
             party.Name = packet.ReadCString();
+            if (string.IsNullOrWhiteSpace(party.Name))
+            {
+                WowGuid128 leaderGuid = GetSession().GameState.GetCurrentGroupLeader();
+                if (leaderGuid != null && !leaderGuid.IsEmpty())
+                    party.Name = GetSession().GameState.GetPlayerName(leaderGuid) ?? string.Empty;
+            }
             party.PartyIndex = GetSession().GameState.GetCurrentPartyIndex();
             SendPacketToClient(party);
         }

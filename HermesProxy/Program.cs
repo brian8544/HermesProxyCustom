@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.CommandLine;
-using System.CommandLine.Builder;
-using System.CommandLine.Parsing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -25,18 +23,13 @@ public class Program
             CommandLineArgumentsTemplate.OverwrittenConfigValues,
         };
 
-        var parser = new CommandLineBuilder(commandTree)
-            .UseDefaults()
-            .Build();
-
-        commandTree.SetHandler((ctx) =>
+        commandTree.SetAction(result =>
         {
-            var result = ctx.ParseResult;
             var commandLineArguments = new CommandLineArguments
             {
-                ConfigFileLocation = result.GetValueForOption(CommandLineArgumentsTemplate.ConfigFileLocation),
-                DisableVersionCheck = result.GetValueForOption(CommandLineArgumentsTemplate.DisableVersionCheck),
-                OverwrittenConfigValues = ParseMultiArgument(result.GetValueForOption(CommandLineArgumentsTemplate.OverwrittenConfigValues)),
+                ConfigFileLocation = result.GetValue(CommandLineArgumentsTemplate.ConfigFileLocation),
+                DisableVersionCheck = result.GetValue(CommandLineArgumentsTemplate.DisableVersionCheck),
+                OverwrittenConfigValues = ParseMultiArgument(result.GetValue(CommandLineArgumentsTemplate.OverwrittenConfigValues)),
             };
             Server.ServerMain(commandLineArguments);
         });
@@ -44,7 +37,7 @@ public class Program
         int exitCode = 1;
         try
         {
-             exitCode = parser.Invoke(args);
+             exitCode = commandTree.Parse(args).Invoke();
         }
         catch (Exception e)
         {
@@ -82,32 +75,32 @@ public class Program
 
     public static class CommandLineArgumentsTemplate
     {
-        public static readonly Option<string?> ConfigFileLocation = new(
-            name: "--config",
-            description: "The config file that will be used",
-            isDefault: true, // Must be set so parseArgument can return default value
-            parseArgument: result =>
+        public static readonly Option<string?> ConfigFileLocation = new("--config")
+        {
+            Description = "The config file that will be used",
+            DefaultValueFactory = _ => "HermesProxy.config",
+            CustomParser = result =>
             {
-                if (result.Tokens.Count == 0)
-                    return "HermesProxy.config";
-
                 string? filePath = result.Tokens.Single().Value;
                 if (!File.Exists(filePath))
                 {
-                    result.ErrorMessage = $"Error: config file '{filePath}' does not exist";
+                    result.AddError($"Error: config file '{filePath}' does not exist");
                     return null;
                 }
 
                 return filePath;
-            });
-        public static readonly Option<bool> DisableVersionCheck = new(
-            name: "--no-version-check",
-            description: "Disables the initial version update check"
-            );
-        public static readonly Option<string[]> OverwrittenConfigValues = new(
-            name: "--set",
-            description: "Overwrites a specific config value. Example: --set ServerAddress=logon.example.com"
-            );
+            }
+        };
+
+        public static readonly Option<bool> DisableVersionCheck = new("--no-version-check")
+        {
+            Description = "Disables the initial version update check"
+        };
+
+        public static readonly Option<string[]> OverwrittenConfigValues = new("--set")
+        {
+            Description = "Overwrites a specific config value. Example: --set ServerAddress=logon.example.com"
+        };
     }
 }
 

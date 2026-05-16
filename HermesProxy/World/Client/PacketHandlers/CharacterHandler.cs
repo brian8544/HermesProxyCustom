@@ -1,7 +1,8 @@
-﻿using HermesProxy.Enums;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
+using Framework.Logging;
 using System;
 using System.Collections.Generic;
 
@@ -126,6 +127,7 @@ namespace HermesProxy.World.Client
                 charEnum.RaceUnlockData.Add(new EnumCharactersResult.RaceUnlock(10, true, false, false));
                 charEnum.RaceUnlockData.Add(new EnumCharactersResult.RaceUnlock(11, true, false, false));
             }
+            Log.PrintNet(LogType.Debug, LogNetDir.P2C, $"Forwarding char enum with {charEnum.Characters.Count} character(s) to client.");
             SendPacketToClient(charEnum);
         }
 
@@ -211,6 +213,8 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_LOGIN_VERIFY_WORLD)]
         void HandleLoginVerifyWorld(WorldPacket packet)
         {
+            _expectingBackendDisconnectAfterLogout = false;
+
             LoginVerifyWorld verify = new LoginVerifyWorld();
             verify.MapID = packet.ReadUInt32();
             GetSession().GameState.CurrentMapId = verify.MapID;
@@ -218,28 +222,33 @@ namespace HermesProxy.World.Client
             verify.Pos.Y = packet.ReadFloat();
             verify.Pos.Z = packet.ReadFloat();
             verify.Pos.Orientation = packet.ReadFloat();
+            GetSession().GameState.CurrentPlayerPosition = verify.Pos;
+            GetSession().GameState.HasCurrentPlayerPosition = true;
             SendPacketToClient(verify);
 
             GetSession().GameState.IsInWorld = true;
 
-            WorldServerInfo info = new();
-            if (verify.MapID > 1)
+            if (Framework.Settings.ClientBuild != ClientVersionBuild.V3_3_5a_12340)
             {
-                info.DifficultyID = 1;
-                info.InstanceGroupSize = 5;
+                WorldServerInfo info = new();
+                if (verify.MapID > 1)
+                {
+                    info.DifficultyID = 1;
+                    info.InstanceGroupSize = 5;
+                }
+                SendPacketToClient(info);
+
+                SetAllTaskProgress tasks = new();
+                SendPacketToClient(tasks);
+
+                InitialSetup setup = new();
+                setup.ServerExpansionLevel = (byte)(LegacyVersion.ExpansionVersion - 1);
+                SendPacketToClient(setup);
+
+                LoadCUFProfiles cuf = new();
+                cuf.Data = GetSession().AccountDataMgr.LoadCUFProfiles();
+                SendPacketToClient(cuf);
             }
-            SendPacketToClient(info);
-
-            SetAllTaskProgress tasks = new();
-            SendPacketToClient(tasks);
-
-            InitialSetup setup = new();
-            setup.ServerExpansionLevel = (byte)(LegacyVersion.ExpansionVersion - 1);
-            SendPacketToClient(setup);
-
-            LoadCUFProfiles cuf = new();
-            cuf.Data = GetSession().AccountDataMgr.LoadCUFProfiles();
-            SendPacketToClient(cuf);
         }
 
         [PacketHandler(Opcode.SMSG_CHARACTER_LOGIN_FAILED)]
@@ -250,16 +259,23 @@ namespace HermesProxy.World.Client
             SendPacketToClient(failed);
 
             GetSession().GameState.IsInWorld = false;
+            GetSession().GameState.HasCurrentPlayerPosition = false;
         }
 
         [PacketHandler(Opcode.SMSG_UPDATE_ACTION_BUTTONS)]
         void HandleUpdateActionButtons(WorldPacket packet)
         {
+            byte wotlkReason = 1;
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
             {
                 byte type = packet.ReadUInt8();
+                wotlkReason = type;
                 if (type == 2)
+                {
+                    if (IsWotlkFrontendClient())
+                        GetSession().InstanceSocket?.SendWotlkActionButtons(null, 2);
                     return;
+                }
             }
 
             List<int> buttons = new List<int>();
@@ -276,10 +292,14 @@ namespace HermesProxy.World.Client
                 buttons.Add(packed);
             }
 
-            while (buttons.Count < 132)
+            int targetButtonCount = IsWotlkFrontendClient() ? 144 : 132;
+            while (buttons.Count < targetButtonCount)
                 buttons.Add(0);
 
             GetSession().GameState.ActionButtons = buttons;
+
+            if (IsWotlkFrontendClient())
+                GetSession().InstanceSocket?.SendWotlkActionButtons(buttons, wotlkReason);
         }
 
         [PacketHandler(Opcode.SMSG_LOGOUT_RESPONSE)]
@@ -298,13 +318,28 @@ namespace HermesProxy.World.Client
             SendPacketToClient(logout);
 
             GetSession().GameState = GameSessionData.CreateNewGameSessionData(GetSession());
-            GetSession().InstanceSocket.CloseSocket();
-            GetSession().InstanceSocket = null;
+
+            // In WotLK frontend mode, realm and instance share one socket.
+            // Closing here disconnects the whole account instead of returning
+            // to character select.
+            if (IsWotlkFrontendClient())
+            {
+                // Backend world socket is expected to close right after logout complete.
+                // Keep realm/frontend session alive and let character screen continue.
+                _expectingBackendDisconnectAfterLogout = true;
+            }
+            else
+            {
+                GetSession().InstanceSocket.CloseSocket();
+                GetSession().InstanceSocket = null;
+            }
         }
 
         [PacketHandler(Opcode.SMSG_LOGOUT_CANCEL_ACK)]
         void HandleLogoutCancelAck(WorldPacket packet)
         {
+            _expectingBackendDisconnectAfterLogout = false;
+
             LogoutCancelAck logout = new LogoutCancelAck();
             SendPacketToClient(logout);
         }

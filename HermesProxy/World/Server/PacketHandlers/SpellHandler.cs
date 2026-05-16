@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using Framework.Constants;
 using HermesProxy.Enums;
 using HermesProxy.World;
@@ -16,50 +16,92 @@ namespace HermesProxy.World.Server
         // Handlers for CMSG opcodes coming from the modern client
         SpellCastTargetFlags ConvertSpellTargetFlags(SpellTargetData target)
         {
+            if (Framework.Settings.ClientBuild != ClientVersionBuild.V3_3_5a_12340)
+            {
+                SpellCastTargetFlags targetFlags = SpellCastTargetFlags.None;
+                if (target.Unit != null && !target.Unit.IsEmpty())
+                {
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.Unit))
+                        targetFlags |= SpellCastTargetFlags.Unit;
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.CorpseEnemy))
+                        targetFlags |= SpellCastTargetFlags.CorpseEnemy;
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.GameObject))
+                        targetFlags |= SpellCastTargetFlags.GameObject;
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.CorpseAlly))
+                        targetFlags |= SpellCastTargetFlags.CorpseAlly;
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.UnitMinipet))
+                        targetFlags |= SpellCastTargetFlags.UnitMinipet;
+                }
+                if (target.Item != null && !target.Item.IsEmpty())
+                {
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.Item))
+                        targetFlags |= SpellCastTargetFlags.Item;
+                    if (target.Flags.HasFlag(SpellCastTargetFlags.TradeItem))
+                        targetFlags |= SpellCastTargetFlags.TradeItem;
+                }
+                if (target.SrcLocation != null)
+                    targetFlags |= SpellCastTargetFlags.SourceLocation;
+                if (target.DstLocation != null)
+                    targetFlags |= SpellCastTargetFlags.DestLocation;
+                if (!String.IsNullOrEmpty(target.Name))
+                    targetFlags |= SpellCastTargetFlags.String;
+                return targetFlags;
+            }
+
+            return NormalizeLegacySpellTargetFlags(target);
+        }
+
+        SpellCastTargetFlags NormalizeLegacySpellTargetFlags(SpellTargetData target)
+        {
+            if (target == null)
+                return SpellCastTargetFlags.None;
+
             SpellCastTargetFlags targetFlags = SpellCastTargetFlags.None;
             if (target.Unit != null && !target.Unit.IsEmpty())
             {
-                if (target.Flags.HasFlag(SpellCastTargetFlags.Unit))
-                    targetFlags |= SpellCastTargetFlags.Unit;
-                if (target.Flags.HasFlag(SpellCastTargetFlags.CorpseEnemy))
-                    targetFlags |= SpellCastTargetFlags.CorpseEnemy;
-                if (target.Flags.HasFlag(SpellCastTargetFlags.GameObject))
-                    targetFlags |= SpellCastTargetFlags.GameObject;
-                if (target.Flags.HasFlag(SpellCastTargetFlags.CorpseAlly))
-                    targetFlags |= SpellCastTargetFlags.CorpseAlly;
-                if (target.Flags.HasFlag(SpellCastTargetFlags.UnitMinipet))
-                    targetFlags |= SpellCastTargetFlags.UnitMinipet;
+                // Preserve all guid-backed target bits that vanilla SpellCastTargets
+                // can actually read. GameObject targets are stored in Unit here.
+                targetFlags |= target.Flags & SpellCastTargetFlags.UnitMask;
+                targetFlags |= target.Flags & SpellCastTargetFlags.GameobjectMask;
+                targetFlags |= target.Flags & SpellCastTargetFlags.CorpseMask;
             }
-            if (target.Item != null & !target.Item.IsEmpty())
-            {
-                if (target.Flags.HasFlag(SpellCastTargetFlags.Item))
-                    targetFlags |= SpellCastTargetFlags.Item;
-                if (target.Flags.HasFlag(SpellCastTargetFlags.TradeItem))
-                    targetFlags |= SpellCastTargetFlags.TradeItem;
-            }
+            if (target.Item != null && !target.Item.IsEmpty())
+                targetFlags |= target.Flags & SpellCastTargetFlags.ItemMask;
             if (target.SrcLocation != null)
                 targetFlags |= SpellCastTargetFlags.SourceLocation;
             if (target.DstLocation != null)
                 targetFlags |= SpellCastTargetFlags.DestLocation;
             if (!String.IsNullOrEmpty(target.Name))
                 targetFlags |= SpellCastTargetFlags.String;
+
+            // Pre-TBC backends use uint16 target flags, so strip unsupported Wrath bits
+            // before writing the packet.
+            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+                targetFlags = (SpellCastTargetFlags)((uint)targetFlags & 0xFFFF);
+
             return targetFlags;
         }
         void WriteSpellTargets(SpellTargetData target, SpellCastTargetFlags targetFlags, WorldPacket packet)
         {
+            if (target == null)
+                targetFlags = SpellCastTargetFlags.None;
+
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
                 packet.WriteUInt16((ushort)targetFlags);
             else
                 packet.WriteUInt32((uint)targetFlags);
 
-            if (targetFlags.HasAnyFlag(SpellCastTargetFlags.Unit | SpellCastTargetFlags.CorpseEnemy | SpellCastTargetFlags.GameObject |
-                SpellCastTargetFlags.CorpseAlly | SpellCastTargetFlags.UnitMinipet))
+            if (target == null || targetFlags == SpellCastTargetFlags.None)
+                return;
+
+            if ((targetFlags & SpellCastTargetFlags.UnitMask) != 0 ||
+                targetFlags.HasAnyFlag(SpellCastTargetFlags.CorpseEnemy | SpellCastTargetFlags.CorpseAlly | SpellCastTargetFlags.GameObject | SpellCastTargetFlags.GameobjectItem))
                 packet.WritePackedGuid(target.Unit.To64());
 
             // Check if the user wants to target the "Will not be traded" slot
             if (targetFlags.HasFlag(SpellCastTargetFlags.TradeItem) && target.Item == WowGuid128.Create(HighGuidType703.Uniq, 10))
                 packet.WritePackedGuid(new WowGuid64((ulong) TradeSlots.NonTraded));
-            else if (targetFlags.HasFlag(SpellCastTargetFlags.Item))
+            else if (targetFlags.HasAnyFlag(SpellCastTargetFlags.Item | SpellCastTargetFlags.TradeItem))
                 packet.WritePackedGuid(target.Item.To64());
 
             if (targetFlags.HasAnyFlag(SpellCastTargetFlags.SourceLocation))
@@ -114,6 +156,20 @@ namespace HermesProxy.World.Server
             // or spells will bug out and glow if spammed.
             if (Settings.ServerSpellDelay > 0)
                 Thread.Sleep(Settings.ServerSpellDelay);
+
+            // 3.3.5a cast packets do not carry a cast GUID. Reusing an empty guid
+            // causes cast-request collisions and desync in the local cast tracker.
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                cast.Cast.CastID.GetCounter() == 0)
+            {
+                ulong synthesizedCounter = (ulong)(Environment.TickCount & 0x7FFFFFFF);
+                cast.Cast.CastID = WowGuid128.Create(
+                    HighGuidType703.Cast,
+                    SpellCastSource.Normal,
+                    (uint)GetSession().GameState.CurrentMapId,
+                    cast.Cast.SpellID,
+                    synthesizedCounter);
+            }
 
             if (GameData.NextMeleeSpells.Contains(cast.Cast.SpellID) ||
                 GameData.AutoRepeatSpells.Contains(cast.Cast.SpellID))
@@ -181,6 +237,11 @@ namespace HermesProxy.World.Server
             }
 
             SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(cast.Cast.Target);
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                (cast.Cast.SpellID == 7266 || cast.Cast.SpellID == 7267))
+            {
+                Log.Print(LogType.Debug, $"[WotLK] Duel cast request spell={cast.Cast.SpellID}, rawFlags=0x{(uint)cast.Cast.Target.Flags:X}, translatedFlags=0x{(uint)targetFlags:X}, unit={cast.Cast.Target.Unit}");
+            }
 
             WorldPacket packet = new WorldPacket(Opcode.CMSG_CAST_SPELL);
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
@@ -267,8 +328,21 @@ namespace HermesProxy.World.Server
             castRequest.Timestamp = Environment.TickCount;
             castRequest.SpellId = use.Cast.SpellID;
             castRequest.SpellXSpellVisualId = use.Cast.SpellXSpellVisualID;
-            castRequest.ClientGUID = use.Cast.CastID;
-            castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId, use.Cast.SpellID, 10000 + use.Cast.CastID.GetCounter());
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                // WotLK CMSG_USE_ITEM does not carry a cast guid. Synthesize a stable
+                // per-request client/server cast id to avoid reusing the same zero guid.
+                ulong itemCastCounter = use.Cast.CastID != null ? use.Cast.CastID.GetCounter() : 0;
+                if (itemCastCounter == 0)
+                    itemCastCounter = (ulong)(castRequest.Timestamp & 0x7FFFFFFF);
+                castRequest.ClientGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId, use.Cast.SpellID, itemCastCounter);
+                castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId, use.Cast.SpellID, 10000 + itemCastCounter);
+            }
+            else
+            {
+                castRequest.ClientGUID = use.Cast.CastID;
+                castRequest.ServerGUID = WowGuid128.Create(HighGuidType703.Cast, SpellCastSource.Normal, (uint)GetSession().GameState.CurrentMapId, use.Cast.SpellID, 10000 + use.Cast.CastID.GetCounter());
+            }
             castRequest.ItemGUID = use.CastItem;
 
             if (GetSession().GameState.CurrentClientNormalCast != null)
@@ -303,10 +377,21 @@ namespace HermesProxy.World.Server
             byte slot = use.PackSlot == Enums.Classic.InventorySlots.Bag0 ? ModernVersion.AdjustInventorySlot(use.Slot) : use.Slot;
             packet.WriteUInt8(containerSlot);
             packet.WriteUInt8(slot);
-            packet.WriteUInt8(GetSession().GameState.GetItemSpellSlot(use.CastItem, use.Cast.SpellID));
+            byte spellIndex = GetSession().GameState.GetItemSpellSlot(use.CastItem, use.Cast.SpellID);
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                // Preserve original WotLK spell_index when available; fallback to computed.
+                byte wotlkSpellIndex = (byte)use.Cast.Misc[0];
+                if (wotlkSpellIndex <= 5)
+                    spellIndex = wotlkSpellIndex;
+            }
+            packet.WriteUInt8(spellIndex);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
-                packet.WriteUInt8(0); // cast count;
+                byte castCount = 0;
+                if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+                    castCount = (byte)use.Cast.Misc[1];
+                packet.WriteUInt8(castCount); // cast count
                 packet.WriteGuid(use.CastItem.To64());
             }
             SpellCastTargetFlags targetFlags = ConvertSpellTargetFlags(use.Cast.Target);

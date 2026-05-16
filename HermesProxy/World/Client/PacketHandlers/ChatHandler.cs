@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -371,6 +371,16 @@ namespace HermesProxy.World.Client
             {
                 return; // was handled by us
             }
+
+            if (type != ChatMessageTypeVanilla.Emote && lang != (uint)Language.Addon)
+            {
+                uint originalLanguage = lang;
+                if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 || lang == 0)
+                    lang = GetDefaultLegacyLanguageForPlayer();
+
+                if (originalLanguage != lang)
+                    Log.Print(LogType.Debug, $"[WotLK] Normalized vanilla chat language for {type}: {originalLanguage}->{lang}.");
+            }
             
             WorldPacket packet = new WorldPacket(Opcode.CMSG_MESSAGECHAT);
             packet.WriteUInt32((uint)type);
@@ -404,6 +414,17 @@ namespace HermesProxy.World.Client
             }
 
             SendPacket(packet);
+        }
+
+        private uint GetDefaultLegacyLanguageForPlayer()
+        {
+            Race race = GetSession().GameState.CurrentPlayerInfo != null
+                ? GetSession().GameState.CurrentPlayerInfo.RaceId
+                : Race.None;
+
+            return GameData.IsHordeRace(race)
+                ? (uint)Language.Orcish
+                : (uint)Language.Common;
         }
 
         // TODO: make all of these available via HTML ingame support menu (as soon as we can influence the page)

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -16,8 +16,10 @@
  */
 
 
+using Framework;
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -26,12 +28,30 @@ using System.Linq;
 
 namespace HermesProxy.World.Server.Packets
 {
+    internal static class WotlkChatPacketCompat
+    {
+        internal static bool IsWotlkFrontendBuild()
+        {
+            return Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340;
+        }
+    }
+
     public class JoinChannel : ClientPacket
     {
         public JoinChannel(WorldPacket packet) : base(packet) { }
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                ChatChannelId = _worldPacket.ReadInt32();
+                _worldPacket.ReadUInt8();
+                _worldPacket.ReadUInt8();
+                ChannelName = _worldPacket.ReadCString();
+                Password = _worldPacket.ReadCString();
+                return;
+            }
+
             ChatChannelId = _worldPacket.ReadInt32();
             uint channelLength = _worldPacket.ReadBits<uint>(7);
             uint passwordLength = _worldPacket.ReadBits<uint>(7);
@@ -75,6 +95,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                ZoneChannelID = _worldPacket.ReadInt32();
+                ChannelName = _worldPacket.ReadCString();
+                return;
+            }
+
             ZoneChannelID = _worldPacket.ReadInt32();
             ChannelName = _worldPacket.ReadString(_worldPacket.ReadBits<uint>(7));
         }
@@ -106,6 +133,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                ChannelName = _worldPacket.ReadCString();
+                return;
+            }
+
             ChannelName = _worldPacket.ReadString(_worldPacket.ReadBits<uint>(7));
         }
 
@@ -154,6 +187,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Text = _worldPacket.ReadCString();
+                return;
+            }
+
             uint len = _worldPacket.ReadBits<uint>(9);
             Text = _worldPacket.ReadString(len);
         }
@@ -167,6 +206,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Text = _worldPacket.ReadCString();
+                return;
+            }
+
             uint len = _worldPacket.ReadBits<uint>(9);
             Text = _worldPacket.ReadString(len);
         }
@@ -180,6 +225,15 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Language = _worldPacket.ReadUInt32();
+                Target = _worldPacket.ReadCString(); // Channel name in WotLK-era CMSG_MESSAGECHAT payload.
+                Text = _worldPacket.ReadCString();
+                ChannelGUID = WowGuid128.Empty;
+                return;
+            }
+
             Language = _worldPacket.ReadUInt32();
             ChannelGUID = _worldPacket.ReadPackedGuid128();
             uint targetLen = _worldPacket.ReadBits<uint>(9);
@@ -200,6 +254,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Language = _worldPacket.ReadUInt32();
+                Target = _worldPacket.ReadCString();
+                Text = _worldPacket.ReadCString();
+                return;
+            }
+
             Language = _worldPacket.ReadUInt32();
             uint targetLen = _worldPacket.ReadBits<uint>(9);
             uint textLen = _worldPacket.ReadBits<uint>(9);
@@ -218,6 +280,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Text = _worldPacket.ReadCString();
+                return;
+            }
+
             uint len = _worldPacket.ReadBits<uint>(9);
             Text = _worldPacket.ReadString(len);
         }
@@ -231,6 +299,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkChatPacketCompat.IsWotlkFrontendBuild())
+            {
+                Language = _worldPacket.ReadUInt32();
+                Text = _worldPacket.ReadCString();
+                return;
+            }
+
             Language = _worldPacket.ReadUInt32();
             uint len = _worldPacket.ReadBits<uint>(9);
             Text = _worldPacket.ReadString(len);

@@ -27,15 +27,34 @@ namespace HermesProxy.World.Server
         {
             WorldPacket packet = new WorldPacket(Opcode.CMSG_QUERY_CREATURE);
             packet.WriteUInt32(queryCreature.CreatureID);
-            packet.WriteGuid(new WowGuid64(HighGuidTypeLegacy.Creature, queryCreature.CreatureID, 1));
+            // Forward the original query guid whenever the frontend provided one.
+            // Falling back to a synthesized guid keeps compatibility with older clients.
+            WowGuid64 guid = queryCreature.Guid != null && !queryCreature.Guid.IsEmpty()
+                ? queryCreature.Guid
+                : new WowGuid64(HighGuidTypeLegacy.Creature, queryCreature.CreatureID, 1);
+            packet.WriteGuid(guid);
             SendPacketToServer(packet);
         }
         [PacketHandler(Opcode.CMSG_QUERY_GAME_OBJECT)]
         void HandleQueryGameObject(QueryGameObject queryGo)
         {
+            if (GetSession().GameState.GameObjectQueryCache.TryGetValue(queryGo.GameObjectID, out var cached))
+            {
+                QueryGameObjectResponse response = new QueryGameObjectResponse
+                {
+                    GameObjectID = cached.GameObjectID,
+                    Guid = WowGuid128.Empty,
+                    Allow = cached.Allow,
+                    Stats = cached.Stats
+                };
+
+                SendPacket(response);
+                return;
+            }
+
             WorldPacket packet = new WorldPacket(Opcode.CMSG_QUERY_GAME_OBJECT);
             packet.WriteUInt32(queryGo.GameObjectID);
-            packet.WriteGuid(queryGo.Guid.To64());
+            packet.WriteGuid(queryGo.Guid);
             SendPacketToServer(packet);
         }
         [PacketHandler(Opcode.CMSG_QUERY_PAGE_TEXT)]

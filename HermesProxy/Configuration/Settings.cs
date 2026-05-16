@@ -1,4 +1,4 @@
-﻿using HermesProxy.Enums;
+using HermesProxy.Enums;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,6 +25,10 @@ namespace Framework
         public static int BNetPort;
         public static int RealmPort;
         public static int InstancePort;
+        public static int WotlkAuthPort;
+        public static int WotlkWorldPort;
+        public static string GruntUsername;
+        public static string GruntPassword;
         public static bool DebugOutput;
         public static bool PacketsLog;
         public static int ServerSpellDelay;
@@ -48,6 +52,10 @@ namespace Framework
             BNetPort = config.GetInt("BNetPort", 1119);
             RealmPort = config.GetInt("RealmPort", 8084);
             InstancePort = config.GetInt("InstancePort", 8086);
+            WotlkAuthPort = config.GetInt("WotlkAuthPort", 3725);
+            WotlkWorldPort = config.GetInt("WotlkWorldPort", 8085);
+            GruntUsername = config.GetString("GruntUsername", "");
+            GruntPassword = config.GetString("GruntPassword", "");
             DebugOutput = config.GetBoolean("DebugOutput", false);
             PacketsLog = config.GetBoolean("PacketsLog", true);
             ServerSpellDelay = config.GetInt("ServerSpellDelay", 0);
@@ -103,6 +111,13 @@ namespace Framework
             if (!IsValidPortNumber(InstancePort))
             {
                 Log.Print(LogType.Server, $"Specified battle.net port ({InstancePort}) out of allowed range (1-65535)");
+                return false;
+            }
+
+            if (ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                (string.IsNullOrWhiteSpace(GruntUsername) || string.IsNullOrWhiteSpace(GruntPassword)))
+            {
+                Log.Print(LogType.Server, "ClientBuild 12340 requires: GruntUsername + GruntPassword to be configured");
                 return false;
             }
 

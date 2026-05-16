@@ -16,12 +16,31 @@ namespace HermesProxy.World.Server
             WorldPacket packet = new WorldPacket(Opcode.CMSG_ATTACK_SWING);
             packet.WriteGuid(attack.Victim.To64());
             SendPacketToServer(packet);
+
+            // 3.3.5 frontend can miss attack-start visuals when bridging to 1.12.
+            // Emit local start immediately; backend SMSG_ATTACK_START/STOP will still reconcile.
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                SAttackStart localStart = new();
+                localStart.Attacker = GetSession().GameState.CurrentPlayerGuid;
+                localStart.Victim = attack.Victim;
+                SendPacket(localStart);
+            }
         }
         [PacketHandler(Opcode.CMSG_ATTACK_STOP)]
         void HandleAttackSwing(AttackStop attack)
         {
             WorldPacket packet = new WorldPacket(Opcode.CMSG_ATTACK_STOP);
             SendPacketToServer(packet);
+
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                SAttackStop localStop = new();
+                localStop.Attacker = GetSession().GameState.CurrentPlayerGuid;
+                localStop.Victim = WowGuid128.Empty;
+                localStop.NowDead = false;
+                SendPacket(localStop);
+            }
         }
         [PacketHandler(Opcode.CMSG_SET_SHEATHED)]
         void HandleSetSheathed(SetSheathed sheath)

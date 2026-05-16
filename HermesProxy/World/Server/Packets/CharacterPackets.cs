@@ -656,14 +656,31 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (WotlkMovementPacketCompat.IsWotlkFrontendBuild())
+            {
+                Index = _worldPacket.ReadUInt8();
+                PackedData = _worldPacket.ReadUInt32();
+                ParsedAction = PackedData & 0x00FFFFFF;
+                ParsedType = (byte)((PackedData >> 24) & 0xFF);
+                Action = (ushort)(ParsedAction & 0xFFFF);
+                Type = ParsedType;
+                return;
+            }
+
             Action = _worldPacket.ReadUInt16();
             Type = _worldPacket.ReadUInt16();
             Index = _worldPacket.ReadUInt8();
+            PackedData = (uint)Action | ((uint)Type << 16);
+            ParsedAction = Action;
+            ParsedType = (byte)(Type & 0xFF);
         }
 
         public ushort Action;
         public ushort Type;
         public byte Index;
+        public uint PackedData;
+        public uint ParsedAction;
+        public byte ParsedType;
     }
 
     public class SetActionBarToggles : ClientPacket

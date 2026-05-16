@@ -10,6 +10,209 @@ namespace HermesProxy.World.Client
 {
     public partial class WorldClient
     {
+        private const float WotlkSyntheticFarTeleportDistance = 533.3333f;
+
+        private void RememberCurrentPlayerPosition(MovementInfo moveInfo)
+        {
+            GetSession().GameState.CurrentPlayerPosition = new Framework.GameMath.Position(
+                moveInfo.Position.X,
+                moveInfo.Position.Y,
+                moveInfo.Position.Z,
+                moveInfo.Orientation);
+            GetSession().GameState.HasCurrentPlayerPosition = true;
+        }
+
+        private bool IsFarFromPosition(Position oldPosition, MovementInfo moveInfo, out float dx, out float dy, out float dz, out float distanceSq)
+        {
+            dx = moveInfo.Position.X - oldPosition.X;
+            dy = moveInfo.Position.Y - oldPosition.Y;
+            dz = moveInfo.Position.Z - oldPosition.Z;
+            distanceSq = dx * dx + dy * dy;
+            return distanceSq > (WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance);
+        }
+
+        private void ClearPendingWotlkSameMapMovementTeleport(string reason, bool clearBufferedUpdates)
+        {
+            var gameState = GetSession().GameState;
+            if (!gameState.IsWaitingForWotlkMovementTeleportAck &&
+                !gameState.PendingLegacyTeleportCounter.HasValue &&
+                gameState.PendingWotlkMovementTeleportGuid == WowGuid128.Empty)
+                return;
+
+            Log.Print(LogType.Warn, $"[WotLK] clearing pending movement teleport state ({reason}).");
+
+            gameState.IsWaitingForWotlkMovementTeleportAck = false;
+            gameState.PendingLegacyTeleportCounter = null;
+            gameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
+            gameState.PendingWotlkMovementTeleportMoveTime = 0;
+            gameState.PendingWotlkMovementTeleportDestination = new Framework.GameMath.Position();
+            gameState.PendingWotlkMovementTeleportStartTick = 0;
+            gameState.HasPendingWotlkFarServerTeleport = false;
+            gameState.PendingWotlkFarServerTeleportGuid = WowGuid128.Empty;
+
+            if (clearBufferedUpdates)
+                UpdateObject.ResetLoginBuffer(gameState);
+        }
+
+        private bool RememberPendingWotlkFarServerTeleport(WowGuid128 guid, MovementInfo moveInfo)
+        {
+            if (!IsWotlkFrontendClient())
+                return false;
+
+            var gameState = GetSession().GameState;
+            if (!gameState.HasCurrentPlayerPosition)
+                return false;
+
+            bool far = IsFarFromPosition(gameState.CurrentPlayerPosition, moveInfo, out float dx, out float dy, out float dz, out float distanceSq);
+            if (!far)
+                return false;
+
+            gameState.HasPendingWotlkFarServerTeleport = true;
+            gameState.PendingWotlkFarServerTeleportGuid = guid;
+            gameState.PendingWotlkFarServerTeleportStartPosition = gameState.CurrentPlayerPosition;
+            gameState.PendingWotlkFarServerTeleportDestination = new Position(
+                moveInfo.Position.X,
+                moveInfo.Position.Y,
+                moveInfo.Position.Z,
+                moveInfo.Orientation);
+
+            ulong moverLow = guid.To64().GetLowValue();
+            ulong currentLow = gameState.CurrentPlayerGuid.To64().GetLowValue();
+            Log.Print(LogType.Debug,
+                $"[WotLK] Detected far server MSG_MOVE_TELEPORT; deferring raw movement and forcing next teleport ACK into worldport path: " +
+                $"mover={moverLow:X}, current={currentLow:X}, old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
+                $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
+                $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}.");
+            return true;
+        }
+
+        private bool ShouldPromoteLegacyTeleportToWotlkWorldPort(WowGuid128 guid, MovementInfo moveInfo)
+        {
+            if (!IsWotlkFrontendClient())
+                return false;
+
+            var gameState = GetSession().GameState;
+            ulong moverLow = guid.To64().GetLowValue();
+            ulong currentLow = gameState.CurrentPlayerGuid.To64().GetLowValue();
+
+            if (gameState.HasPendingWotlkFarServerTeleport)
+            {
+                float destDx = moveInfo.Position.X - gameState.PendingWotlkFarServerTeleportDestination.X;
+                float destDy = moveInfo.Position.Y - gameState.PendingWotlkFarServerTeleportDestination.Y;
+                float destDz = moveInfo.Position.Z - gameState.PendingWotlkFarServerTeleportDestination.Z;
+                float destDistanceSq = destDx * destDx + destDy * destDy + destDz * destDz;
+                bool destinationMatches = destDistanceSq < 25.0f * 25.0f;
+                bool selfOrUnknown = currentLow == 0 || moverLow == 0 || moverLow == currentLow;
+
+                if (destinationMatches && selfOrUnknown)
+                {
+                    Position oldPosition = gameState.PendingWotlkFarServerTeleportStartPosition;
+                    bool far = IsFarFromPosition(oldPosition, moveInfo, out float dx, out float dy, out float dz, out float distanceSq);
+                    Log.Print(LogType.Debug,
+                        $"[WotLK] Promoting teleport ACK because prior MSG_MOVE_TELEPORT was far: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"old=({oldPosition.X:0.###},{oldPosition.Y:0.###},{oldPosition.Z:0.###}), " +
+                        $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
+                        $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}, promote={far}.");
+                    return far;
+                }
+
+                Log.Print(LogType.Debug,
+                    $"[WotLK] Pending far server teleport did not match this ACK: mover={moverLow:X}, current={currentLow:X}, destDistanceSq={destDistanceSq:0.###}, selfOrUnknown={selfOrUnknown}.");
+            }
+
+            // Vanilla MSG_MOVE_TELEPORT_ACK is a server-directed teleport for the local
+            // mover.  In some crash/reconnect paths CurrentPlayerGuid can briefly be
+            // stale or empty, so do not classify it as a harmless near-teleport just
+            // because the guid guard is inconclusive.  Only reject it when we clearly
+            // know it belongs to a different mover.
+            if (currentLow != 0 && moverLow != 0 && moverLow != currentLow)
+            {
+                Log.Print(LogType.Debug, $"[WotLK] Not promoting legacy teleport for non-self mover: mover={moverLow:X}, current={currentLow:X}.");
+                return false;
+            }
+
+            if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+            {
+                // 1.12 backends report even continent-spanning .tele commands as a
+                // server-side MSG_MOVE_TELEPORT_ACK without SMSG_TRANSFER_PENDING or
+                // SMSG_NEW_WORLD.  The WotLK client is not stable if we translate that
+                // into a plain movement update and then stream destination objects.  In
+                // WotLK-frontend/vanilla-backend mode, treat every self teleport ACK as
+                // a synthetic worldport.  Short-range teleports get a loading screen, but
+                // far same-map teleports no longer poison the character for relog.
+                if (gameState.HasCurrentPlayerPosition)
+                {
+                    bool far = IsFarFromPosition(gameState.CurrentPlayerPosition, moveInfo, out float dx, out float dy, out float dz, out float distanceSq);
+                    Log.Print(LogType.Debug,
+                        $"[WotLK] Forcing vanilla teleport ACK through NEW_WORLD: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
+                        $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
+                        $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, far={far}.");
+                }
+                else
+                {
+                    Log.Print(LogType.Debug,
+                        $"[WotLK] Forcing vanilla teleport ACK through NEW_WORLD without prior position: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
+                }
+                return true;
+            }
+
+            if (!gameState.HasCurrentPlayerPosition)
+            {
+                Log.Print(LogType.Debug, $"[WotLK] Cannot classify legacy teleport distance yet; missing current player position (mover={moverLow:X}, current={currentLow:X}).");
+                return false;
+            }
+
+            bool promote = IsFarFromPosition(gameState.CurrentPlayerPosition, moveInfo, out float normalDx, out float normalDy, out float normalDz, out float normalDistanceSq);
+
+            Log.Print(LogType.Debug,
+                $"[WotLK] Legacy teleport distance classification: mover={moverLow:X}, current={currentLow:X}, " +
+                $"old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
+                $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
+                $"delta=({normalDx:0.###},{normalDy:0.###},{normalDz:0.###}), distanceSq={normalDistanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}, promote={promote}.");
+
+            return promote;
+        }
+
+        private void BeginSyntheticWotlkWorldPortForLegacyTeleport(WowGuid128 guid, MoveTeleport teleport, MovementInfo moveInfo)
+        {
+            var gameState = GetSession().GameState;
+            gameState.HasPendingSyntheticWotlkWorldPortAck = true;
+            gameState.HasPendingWotlkFarServerTeleport = false;
+            gameState.PendingWotlkFarServerTeleportGuid = WowGuid128.Empty;
+            gameState.PendingSyntheticWotlkWorldPortGuid = guid;
+            gameState.PendingSyntheticWotlkWorldPortCounter = teleport.MoveCounter;
+            gameState.PendingSyntheticWotlkWorldPortMoveTime = moveInfo.MoveTime;
+            gameState.PendingSyntheticWotlkWorldPortStartTick = Environment.TickCount;
+            gameState.IsWaitingForNewWorld = false;
+            gameState.IsWaitingForWorldPortAck = true;
+            gameState.PendingTransferMapId = gameState.CurrentMapId ?? 0;
+
+            UpdateObject.ResetLoginBuffer(gameState);
+
+            TransferPending pending = new()
+            {
+                MapID = gameState.PendingTransferMapId,
+                OldMapPosition = gameState.HasCurrentPlayerPosition
+                    ? gameState.CurrentPlayerPosition.ToVector3()
+                    : moveInfo.Position
+            };
+
+            NewWorld newWorld = new()
+            {
+                MapID = gameState.PendingTransferMapId,
+                Position = moveInfo.Position,
+                Orientation = moveInfo.Orientation,
+                Reason = 4
+            };
+
+            Log.Print(LogType.Debug, $"[WotLK] Promoting vanilla legacy teleport to WotLK NEW_WORLD: map={newWorld.MapID}, counter={teleport.MoveCounter}, old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
+            SendPacketToClient(pending);
+            SendPacketToClient(newWorld);
+            RememberCurrentPlayerPosition(moveInfo);
+        }
+
         // Handlers for SMSG opcodes coming the legacy world server
         [PacketHandler(Opcode.MSG_MOVE_START_FORWARD)]
         [PacketHandler(Opcode.MSG_MOVE_START_BACKWARD)]
@@ -49,19 +252,70 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.MSG_MOVE_WATER_WALK)]
         void HandleMovementMessages(WorldPacket packet)
         {
-            MoveUpdate moveUpdate = new MoveUpdate();
-            moveUpdate.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
-            moveUpdate.MoveInfo = new();
-            moveUpdate.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
-            moveUpdate.MoveInfo.Flags = (uint)(((MovementFlagWotLK)moveUpdate.MoveInfo.Flags).CastFlags<MovementFlagModern>());
-            moveUpdate.MoveInfo.ValidateMovementInfo();
+            Opcode outgoingOpcode = packet.GetUniversalOpcode(false);
+            WowGuid128 moverGuid = packet.ReadPackedGuid().To128(GetSession().GameState);
+            MovementInfo moveInfo = new();
+            moveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
+            moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
+
+            moveInfo.ValidateMovementInfo();
+
+            if (IsWotlkFrontendClient() &&
+                outgoingOpcode != Opcode.MSG_MOVE_SET_FACING)
+            {
+                ulong moverLow = moverGuid.To64().GetLowValue();
+                ulong currentLow = GetSession().GameState.CurrentPlayerGuid.To64().GetLowValue();
+                Log.Print(LogType.Debug, $"[WotLK] Backend movement {outgoingOpcode}: mover={moverLow:X}, current={currentLow:X}, flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), o={moveInfo.Orientation:0.###}.");
+            }
+
+            if (IsWotlkFrontendClient() &&
+                outgoingOpcode == Opcode.MSG_MOVE_TELEPORT)
+            {
+                // In 1.12 this server->client packet is only a precursor to the later
+                // MSG_MOVE_TELEPORT_ACK.  Passing it through to a 3.3.5 client can leave
+                // the client half-moved while the server later sends object updates for
+                // the destination area.  Suppress it unconditionally in WotLK frontend
+                // mode and let HandleMoveTeleportAck perform the single authoritative
+                // TRANSFER_PENDING + NEW_WORLD handoff.
+                bool rememberedAsFar = RememberPendingWotlkFarServerTeleport(moverGuid, moveInfo);
+                if (!rememberedAsFar)
+                {
+                    var gameState = GetSession().GameState;
+                    gameState.HasPendingWotlkFarServerTeleport = true;
+                    gameState.PendingWotlkFarServerTeleportGuid = moverGuid;
+                    gameState.PendingWotlkFarServerTeleportStartPosition = gameState.HasCurrentPlayerPosition
+                        ? gameState.CurrentPlayerPosition
+                        : new Position(moveInfo.Position.X, moveInfo.Position.Y, moveInfo.Position.Z, moveInfo.Orientation);
+                    gameState.PendingWotlkFarServerTeleportDestination = new Position(
+                        moveInfo.Position.X,
+                        moveInfo.Position.Y,
+                        moveInfo.Position.Z,
+                        moveInfo.Orientation);
+
+                    Log.Print(LogType.Debug,
+                        $"[WotLK] Suppressing backend MSG_MOVE_TELEPORT and forcing next teleport ACK through NEW_WORLD: " +
+                        $"pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), map={gameState.CurrentMapId?.ToString() ?? "unknown"}.");
+                }
+                return;
+            }
+
+            if (IsCurrentPlayerGuid(moverGuid))
+                RememberCurrentPlayerPosition(moveInfo);
+
+            MoveUpdate moveUpdate = IsWotlkFrontendClient()
+                ? new MoveUpdate(outgoingOpcode)
+                : new MoveUpdate();
+            moveUpdate.MoverGUID = moverGuid;
+            moveUpdate.MoveInfo = moveInfo;
             SendPacketToClient(moveUpdate);
         }
 
         [PacketHandler(Opcode.MSG_MOVE_KNOCK_BACK)]
         void HandleMoveKnockBack(WorldPacket packet)
         {
-            MoveUpdateKnockBack knockback = new MoveUpdateKnockBack();
+            MoveUpdateKnockBack knockback = IsWotlkFrontendClient()
+                ? new MoveUpdateKnockBack(packet.GetUniversalOpcode(false))
+                : new MoveUpdateKnockBack();
             knockback.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
             knockback.MoveInfo = new();
             knockback.MoveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
@@ -92,16 +346,32 @@ namespace HermesProxy.World.Client
             ControlUpdate control = new ControlUpdate();
             control.Guid = packet.ReadPackedGuid().To128(GetSession().GameState);
             control.HasControl = packet.ReadBool();
+
+            // In WotLK-frontend mode, losing control on the active player can leave
+            // the client in a turn-only state (no forward movement opcodes emitted).
+            // Keep authority pinned to true for the local player.
+            if (IsWotlkFrontendClient() &&
+                IsCurrentPlayerGuid(control.Guid) &&
+                !control.HasControl)
+            {
+                Log.Print(LogType.Debug, "[WotLK] Overriding SMSG_CONTROL_UPDATE(false) to true for active player.");
+                control.HasControl = true;
+            }
+
             SendPacketToClient(control);
         }
 
         [PacketHandler(Opcode.MSG_MOVE_TELEPORT_ACK)]
         void HandleMoveTeleportAck(WorldPacket packet)
         {
+            // Never raw-forward backend MSG_MOVE_TELEPORT_ACK to Wrath frontend.
+            // Wrath expects this as a client->server ack and can crash or desync if
+            // received as server payload. Translate to MoveTeleport instead.
+
             WowGuid128 guid = packet.ReadPackedGuid().To128(GetSession().GameState);
 
             if (GetSession().GameState.IsInTaxiFlight &&
-                GetSession().GameState.CurrentPlayerGuid == guid)
+                IsCurrentPlayerGuid(guid))
             {
                 ControlUpdate control = new ControlUpdate();
                 control.Guid = guid;
@@ -113,6 +383,7 @@ namespace HermesProxy.World.Client
             MoveTeleport teleport = new MoveTeleport();
             teleport.MoverGUID = guid;
             teleport.MoveCounter = packet.ReadUInt32();
+            GetSession().GameState.PendingLegacyTeleportCounter = teleport.MoveCounter;
             MovementInfo moveInfo = new();
             moveInfo.ReadMovementInfoLegacy(packet, GetSession().GameState);
             moveInfo.Flags = (uint)(((MovementFlagWotLK)moveInfo.Flags).CastFlags<MovementFlagModern>());
@@ -125,29 +396,119 @@ namespace HermesProxy.World.Client
                 teleport.Vehicle = new();
                 teleport.Vehicle.VehicleSeatIndex = moveInfo.TransportSeat;
             }
+
+            if (IsWotlkFrontendClient())
+            {
+                ClearPendingWotlkSameMapMovementTeleport("new backend same-map teleport", true);
+
+                // Vanilla same-map teleports are not worldports.  The 1.12 server
+                // remains in-world and expects MSG_MOVE_TELEPORT_ACK, not
+                // MSG_MOVE_WORLDPORT_ACK.  Wrath accepts MSG_MOVE_TELEPORT but often
+                // does not emit CMSG_MOVE_TELEPORT_ACK for this legacy payload.  Send
+                // the movement teleport, hold destination updates, then let the first
+                // post-teleport client movement act as the safe ACK point.
+                MoveUpdate teleportMove = new MoveUpdate(Opcode.MSG_MOVE_TELEPORT)
+                {
+                    MoverGUID = guid,
+                    MoveInfo = moveInfo
+                };
+
+                GetSession().GameState.IsWaitingForWotlkMovementTeleportAck = true;
+                GetSession().GameState.PendingWotlkMovementTeleportGuid = guid;
+                GetSession().GameState.PendingWotlkMovementTeleportMoveTime = moveInfo.MoveTime;
+                GetSession().GameState.PendingWotlkMovementTeleportDestination = new Framework.GameMath.Position(
+                    moveInfo.Position.X,
+                    moveInfo.Position.Y,
+                    moveInfo.Position.Z,
+                    moveInfo.Orientation);
+                GetSession().GameState.PendingWotlkMovementTeleportStartTick = Environment.TickCount;
+                GetSession().GameState.IsWaitingForWorldPortAck = false;
+                GetSession().GameState.HasPendingSyntheticWotlkWorldPortAck = false;
+                GetSession().GameState.PendingSyntheticWotlkWorldPortStartTick = 0;
+                UpdateObject.ResetLoginBuffer(GetSession().GameState);
+
+                Log.Print(LogType.Debug,
+                    $"[WotLK] sending MSG_MOVE_TELEPORT and waiting for zone/movement ACK: guid={guid.To64().GetLowValue():X}, counter={teleport.MoveCounter}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
+                SendPacketToClient(teleportMove);
+                RememberCurrentPlayerPosition(moveInfo);
+                return;
+            }
+
             SendPacketToClient(teleport);
+        }
+
+        private void AcknowledgeLegacyNearTeleport(WowGuid128 guid, uint moveCounter, uint moveTime)
+        {
+            if (!LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+                return;
+
+            if (IsWotlkFrontendClient())
+            {
+                // In Wrath frontend mode we must never complete a vanilla teleport by
+                // silently ACKing it here.  The 3.3.5 client needs the synthetic
+                // TRANSFER_PENDING/NEW_WORLD path first; otherwise it can receive
+                // destination object updates while still in the previous world state.
+                Log.Print(LogType.Error, $"[WotLK] BLOCKED unsafe legacy teleport auto-ACK: counter={moveCounter}, time={moveTime}. This should have gone through NEW_WORLD.");
+                return;
+            }
+
+            WorldPacket ack = new WorldPacket(Opcode.MSG_MOVE_TELEPORT_ACK);
+            ack.WriteGuid(guid.To64());
+            ack.WriteUInt32(moveCounter);
+            ack.WriteUInt32(moveTime);
+            GetSession().GameState.PendingLegacyTeleportCounter = null;
+            GetSession().GameState.HasPendingWotlkFarServerTeleport = false;
+            GetSession().GameState.PendingWotlkFarServerTeleportGuid = WowGuid128.Empty;
+            Log.Print(LogType.Debug, $"[Legacy] ACKing short-range teleport: counter={moveCounter}, time={moveTime}.");
+            SendPacketToServer(ack);
         }
 
         [PacketHandler(Opcode.SMSG_TRANSFER_PENDING)]
         void HandleTransferPending(WorldPacket packet)
         {
+            if (IsWotlkFrontendClient())
+                ClearPendingWotlkSameMapMovementTeleport("real SMSG_TRANSFER_PENDING", true);
+
             if (GetSession().GameState.IsWaitingForWorldPortAck)
             {
-                Log.Print(LogType.Error, "Skipping SMSG_TRANSFER_PENDING, client is already being teleported.");
-                return;
+                if (IsWotlkFrontendClient())
+                {
+                    Log.Print(LogType.Warn, "[WotLK] Received SMSG_TRANSFER_PENDING while still waiting for worldport ACK; clearing stale state and starting the new transfer.");
+                    GetSession().GameState.IsWaitingForWorldPortAck = false;
+                    GetSession().GameState.IsWaitingForNewWorld = false;
+                    GetSession().GameState.HasPendingSyntheticWotlkWorldPortAck = false;
+                    GetSession().GameState.PendingSyntheticWotlkWorldPortStartTick = 0;
+                    GetSession().GameState.IsWaitingForWotlkMovementTeleportAck = false;
+                    GetSession().GameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
+                    GetSession().GameState.PendingWotlkMovementTeleportMoveTime = 0;
+                    GetSession().GameState.PendingWotlkMovementTeleportDestination = new Framework.GameMath.Position();
+                    GetSession().GameState.PendingWotlkMovementTeleportStartTick = 0;
+                }
+                else
+                {
+                    Log.Print(LogType.Error, "Skipping SMSG_TRANSFER_PENDING, client is already being teleported.");
+                    return;
+                }
             }
 
             TransferPending transfer = new TransferPending();
             transfer.MapID = GetSession().GameState.PendingTransferMapId = packet.ReadUInt32();
-            transfer.OldMapPosition = Vector3.Zero;
+            transfer.OldMapPosition = GetSession().GameState.HasCurrentPlayerPosition
+                ? GetSession().GameState.CurrentPlayerPosition.ToVector3()
+                : Vector3.Zero;
+            if (IsWotlkFrontendClient())
+                UpdateObject.ResetLoginBuffer(GetSession().GameState);
             SendPacketToClient(transfer);
             GetSession().GameState.IsFirstEnterWorld = false;
             GetSession().GameState.IsWaitingForNewWorld = true;
 
-            SuspendToken suspend = new();
-            suspend.SequenceIndex = 3;
-            suspend.Reason = 1;
-            SendPacketToClient(suspend);
+            if (!IsWotlkFrontendClient())
+            {
+                SuspendToken suspend = new();
+                suspend.SequenceIndex = 3;
+                suspend.Reason = 1;
+                SendPacketToClient(suspend);
+            }
         }
 
         [PacketHandler(Opcode.SMSG_TRANSFER_ABORTED)]
@@ -173,16 +534,35 @@ namespace HermesProxy.World.Client
 
             SendPacketToClient(transfer);
             GetSession().GameState.IsWaitingForNewWorld = false;
+            GetSession().GameState.IsWaitingForWorldPortAck = false;
+            GetSession().GameState.HasPendingSyntheticWotlkWorldPortAck = false;
+            GetSession().GameState.PendingSyntheticWotlkWorldPortStartTick = 0;
+            GetSession().GameState.IsWaitingForWotlkMovementTeleportAck = false;
+            GetSession().GameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
+            GetSession().GameState.PendingWotlkMovementTeleportMoveTime = 0;
+            GetSession().GameState.PendingWotlkMovementTeleportDestination = new Framework.GameMath.Position();
+            GetSession().GameState.PendingWotlkMovementTeleportStartTick = 0;
         }
 
         [PacketHandler(Opcode.SMSG_NEW_WORLD)]
         void HandleNewWorld(WorldPacket packet)
         {
+            if (IsWotlkFrontendClient())
+                ClearPendingWotlkSameMapMovementTeleport("real SMSG_NEW_WORLD", true);
+
             NewWorld teleport = new NewWorld();
             GetSession().GameState.CurrentMapId = teleport.MapID = packet.ReadUInt32();
             teleport.Position = packet.ReadVector3();
             teleport.Orientation = packet.ReadFloat();
             teleport.Reason = 4;
+            GetSession().GameState.CurrentPlayerPosition = new Framework.GameMath.Position(
+                teleport.Position.X,
+                teleport.Position.Y,
+                teleport.Position.Z,
+                teleport.Orientation);
+            GetSession().GameState.HasCurrentPlayerPosition = true;
+            if (IsWotlkFrontendClient())
+                UpdateObject.ResetLoginBuffer(GetSession().GameState);
             GetSession().GameState.IsFirstEnterWorld = false;
 
             if (GetSession().GameState.IsWaitingForNewWorld)
@@ -190,7 +570,7 @@ namespace HermesProxy.World.Client
                 GetSession().GameState.IsWaitingForNewWorld = false;
                 GetSession().GameState.IsWaitingForWorldPortAck = true;
                 SendPacketToClient(teleport);
-                if (teleport.MapID > 1)
+                if (!IsWotlkFrontendClient() && teleport.MapID > 1)
                 {
                     UpdateLastInstance instance = new();
                     instance.MapID = teleport.MapID;
@@ -205,13 +585,16 @@ namespace HermesProxy.World.Client
                     SendPacketToClient(resume);
                 }
 
-                WorldServerInfo info = new();
-                if (teleport.MapID > 1)
+                if (!IsWotlkFrontendClient())
                 {
-                    info.DifficultyID = 1;
-                    info.InstanceGroupSize = 5;
+                    WorldServerInfo info = new();
+                    if (teleport.MapID > 1)
+                    {
+                        info.DifficultyID = 1;
+                        info.InstanceGroupSize = 5;
+                    }
+                    SendPacketToClient(info);
                 }
-                SendPacketToClient(info);
             }
         }
 
@@ -248,6 +631,13 @@ namespace HermesProxy.World.Client
         { // for own player
             string opcodeName = packet.GetUniversalOpcode(false).ToString().Replace("SMSG_FORCE_", "SMSG_MOVE_SET_").Replace("_CHANGE", "");
             Opcode universalOpcode = Opcodes.GetUniversalOpcode(opcodeName);
+            if (universalOpcode == Opcode.MSG_NULL_ACTION || ModernVersion.GetCurrentOpcode(universalOpcode) == 0)
+            {
+                // Some modern opcode maps (notably WotLK frontend mode) do not define
+                // SMSG_MOVE_SET_* variants for these packets, but do define SMSG_FORCE_*.
+                // Falling back prevents dropping speed updates and leaving player movement locked.
+                universalOpcode = packet.GetUniversalOpcode(false);
+            }
 
             MoveSetSpeed speed = new MoveSetSpeed(universalOpcode);
             speed.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
@@ -290,6 +680,8 @@ namespace HermesProxy.World.Client
         { // for other players
             string opcodeName = packet.GetUniversalOpcode(false).ToString().Replace("MSG_MOVE_SET", "SMSG_MOVE_UPDATE");
             Opcode universalOpcode = Opcodes.GetUniversalOpcode(opcodeName);
+            if (IsWotlkFrontendClient())
+                universalOpcode = packet.GetUniversalOpcode(false);
 
             MoveUpdateSpeed speed = new MoveUpdateSpeed(universalOpcode);
             speed.MoverGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
@@ -532,7 +924,7 @@ namespace HermesProxy.World.Client
             bool isTaxiFlight = (hasTaxiFlightFlags &&
                                 (GetSession().GameState.IsWaitingForTaxiStart ||
                                  Math.Abs(packet.GetReceivedTime() - GetSession().GameState.CurrentPlayerCreateTime) <= 1000) &&
-                                 GetSession().GameState.CurrentPlayerGuid == guid);
+                                 IsCurrentPlayerGuid(guid));
 
             if (isTaxiFlight)
             {

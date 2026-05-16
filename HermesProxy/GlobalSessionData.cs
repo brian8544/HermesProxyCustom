@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Framework.Realm;
+using Framework.GameMath;
 using HermesProxy.World.Server.Packets;
 using ArenaTeamInspectData = HermesProxy.World.Server.Packets.ArenaTeamInspectData;
 
@@ -56,7 +57,24 @@ namespace HermesProxy
         public bool IsFirstEnterWorld;
         public bool IsConnectedToInstance;
         public Queue<ServerPacket> PendingUninstancedPackets = new(); // Here packets are queued while IsConnectedToInstance = false;
+        public uint? PendingLegacyTeleportCounter;
         public bool IsInWorld;
+        public bool HasCurrentPlayerPosition;
+        public Position CurrentPlayerPosition;
+        public bool HasPendingWotlkFarServerTeleport;
+        public WowGuid128 PendingWotlkFarServerTeleportGuid;
+        public Position PendingWotlkFarServerTeleportStartPosition;
+        public Position PendingWotlkFarServerTeleportDestination;
+        public bool HasPendingSyntheticWotlkWorldPortAck;
+        public WowGuid128 PendingSyntheticWotlkWorldPortGuid;
+        public uint PendingSyntheticWotlkWorldPortCounter;
+        public uint PendingSyntheticWotlkWorldPortMoveTime;
+        public int PendingSyntheticWotlkWorldPortStartTick;
+        public bool IsWaitingForWotlkMovementTeleportAck;
+        public WowGuid128 PendingWotlkMovementTeleportGuid;
+        public uint PendingWotlkMovementTeleportMoveTime;
+        public Position PendingWotlkMovementTeleportDestination;
+        public int PendingWotlkMovementTeleportStartTick;
         public uint? CurrentMapId;
         public uint CurrentZoneId;
         public uint CurrentTaxiNode;
@@ -99,6 +117,7 @@ namespace HermesProxy
         public System.Threading.Mutex ObjectCacheMutex = new System.Threading.Mutex();
         public Dictionary<WowGuid128, Dictionary<int, UpdateField>> ObjectCacheLegacy = new();
         public Dictionary<WowGuid128, UpdateFieldsArray> ObjectCacheModern = new();
+        public Dictionary<uint, QueryGameObjectResponse> GameObjectQueryCache = new();
         public Dictionary<WowGuid128, ObjectType> OriginalObjectTypes = new();
         public Dictionary<WowGuid128, uint[]> ItemGems = new();
         public Dictionary<uint, Class> CreatureClasses = new();
@@ -124,6 +143,14 @@ namespace HermesProxy
         public TradeSession? CurrentTrade = null;
         public HashSet<uint> RequestedItemHotfixes = new HashSet<uint>();
         public HashSet<uint> RequestedItemSparseHotfixes = new HashSet<uint>();
+        public Queue<uint> PendingLegacyItemQueries = new();
+        public bool PlayerObjectSent;
+        public HashSet<WowGuid128> WotlkClientKnownObjectGuids = new();
+        public bool IsSettlingWotlkWorldPortObjectStream;
+        public int WotlkWorldPortObjectStreamSettleStartTick;
+        public List<ObjectUpdate> PendingLoginUpdates = new();
+        public List<WowGuid128> PendingLoginDestroys = new();
+        public List<WowGuid128> PendingLoginOutOfRangeGuids = new();
 
         private GameSessionData()
         {
@@ -551,7 +578,17 @@ namespace HermesProxy
                 {
                     ObjectCacheMutex.ReleaseMutex();
                     return itr.Key;
-                }  
+                }
+
+                int unitPetNumberField = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_PETNUMBER);
+                if (unitPetNumberField >= 0 &&
+                    ObjectCacheLegacy.TryGetValue(itr.Key, out var legacyFields) &&
+                    legacyFields.TryGetValue(unitPetNumberField, out var petNumberField) &&
+                    petNumberField.UInt32Value == petNumber)
+                {
+                    ObjectCacheMutex.ReleaseMutex();
+                    return itr.Key;
+                }
             }
             ObjectCacheMutex.ReleaseMutex();
             return null;
@@ -800,6 +837,7 @@ namespace HermesProxy
         public AuthClient AuthClient;
         public WorldClient WorldClient;
         public SniffFile ModernSniff;
+        public bool IsDisconnecting;
 
         public Dictionary<string, WowGuid128> GuildsByName = new();
         public Dictionary<uint, List<string>> GuildRanks = new();
@@ -870,33 +908,46 @@ namespace HermesProxy
 
         public void OnDisconnect()
         {
-            if (ModernSniff != null)
-            {
-                ModernSniff.CloseFile();
-                ModernSniff = null;
-            }
-            if (AuthClient != null)
-            {
-                AuthClient.Disconnect();
-                AuthClient = null;
-            }
-            if (WorldClient != null)
-            {
-                WorldClient.Disconnect();
-                WorldClient = null;
-            }
-            if (RealmSocket != null)
-            {
-                RealmSocket.CloseSocket();
-                RealmSocket = null;
-            }
-            if (InstanceSocket != null)
-            {
-                InstanceSocket.CloseSocket();
-                InstanceSocket = null;
-            }
+            if (IsDisconnecting)
+                return;
 
-            GameState = GameSessionData.CreateNewGameSessionData(this);
+            IsDisconnecting = true;
+            try
+            {
+                if (ModernSniff != null)
+                {
+                    ModernSniff.CloseFile();
+                    ModernSniff = null;
+                }
+                if (AuthClient != null)
+                {
+                    AuthClient.Disconnect();
+                    AuthClient = null;
+                }
+                if (WorldClient != null)
+                {
+                    if (GameState?.IsInWorld == true)
+                        WorldClient.ForceLogoutBeforeDisconnect("session cleanup");
+                    WorldClient.Disconnect();
+                    WorldClient = null;
+                }
+                if (RealmSocket != null)
+                {
+                    RealmSocket.CloseSocket();
+                    RealmSocket = null;
+                }
+                if (InstanceSocket != null)
+                {
+                    InstanceSocket.CloseSocket();
+                    InstanceSocket = null;
+                }
+
+                GameState = GameSessionData.CreateNewGameSessionData(this);
+            }
+            finally
+            {
+                IsDisconnecting = false;
+            }
         }
 
         public void SendHermesTextMessage(string message, bool isError = false)

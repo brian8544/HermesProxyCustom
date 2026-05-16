@@ -22,7 +22,7 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_DUEL_RESPONSE)]
         void HandleDuelResponse(DuelResponse response)
         {
-            if (response.Accepted)
+            if (response.Accepted && !response.Forfeited)
             {
                 WorldPacket packet = new WorldPacket(Opcode.CMSG_DUEL_ACCEPTED);
                 packet.WriteGuid(response.ArbiterGUID.To64());

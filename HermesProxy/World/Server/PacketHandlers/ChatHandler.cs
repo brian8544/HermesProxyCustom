@@ -108,12 +108,13 @@ namespace HermesProxy.World.Server
         void HandleChatMessageChannel(ChatMessageChannel channel)
         {
             var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(channel.Text);
+            uint language = NormalizeLegacyChatLanguage(channel.Language);
             foreach (string text in toBeSentTextParts)
             {
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-                    GetSession().WorldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Channel, channel.Language, text, channel.Target, "");
+                    GetSession().WorldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Channel, language, text, channel.Target, "");
                 else
-                    GetSession().WorldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Channel, channel.Language, text, channel.Target, "");
+                    GetSession().WorldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Channel, language, text, channel.Target, "");
             }
         }
 
@@ -121,12 +122,13 @@ namespace HermesProxy.World.Server
         void HandleChatMessageWhisper(ChatMessageWhisper whisper)
         {
             var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(whisper.Text);
+            uint language = NormalizeLegacyChatLanguage(whisper.Language);
             foreach (string text in toBeSentTextParts)
             {
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-                    GetSession().WorldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Whisper, whisper.Language, text, "", whisper.Target);
+                    GetSession().WorldClient.SendMessageChatWotLK(ChatMessageTypeWotLK.Whisper, language, text, "", whisper.Target);
                 else
-                    GetSession().WorldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Whisper, whisper.Language, text, "", whisper.Target);
+                    GetSession().WorldClient.SendMessageChatVanilla(ChatMessageTypeVanilla.Whisper, language, text, "", whisper.Target);
             }
         }
 
@@ -190,17 +192,18 @@ namespace HermesProxy.World.Server
             }
 
             var toBeSentTextParts = ConvertTextMessageIntoMaxLengthParts(packet.Text);
+            uint language = NormalizeLegacyChatLanguage(packet.Language);
             foreach (string text in toBeSentTextParts)
             {
                 if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 {
                     ChatMessageTypeWotLK chatMsg = (ChatMessageTypeWotLK)Enum.Parse(typeof(ChatMessageTypeWotLK), type.ToString());
-                    GetSession().WorldClient.SendMessageChatWotLK(chatMsg, packet.Language, text, "", "");
+                    GetSession().WorldClient.SendMessageChatWotLK(chatMsg, language, text, "", "");
                 }
                 else
                 {
                     ChatMessageTypeVanilla chatMsg = (ChatMessageTypeVanilla)Enum.Parse(typeof(ChatMessageTypeVanilla), type.ToString());
-                    GetSession().WorldClient.SendMessageChatVanilla(chatMsg, packet.Language, text, "", "");
+                    GetSession().WorldClient.SendMessageChatVanilla(chatMsg, language, text, "", "");
                 }
             }
         }
@@ -300,6 +303,46 @@ namespace HermesProxy.World.Server
             }
 
             return toBeSendTextParts;
+        }
+
+        private uint NormalizeLegacyChatLanguage(uint requestedLanguage)
+        {
+            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+                return requestedLanguage;
+
+            if (_isWotlkFrontend && requestedLanguage != (uint)Language.Addon)
+                return GetDefaultLegacyChatLanguage();
+
+            switch ((Language)requestedLanguage)
+            {
+                case Language.Orcish:
+                case Language.Darnassian:
+                case Language.Taurahe:
+                case Language.Dwarvish:
+                case Language.Common:
+                case Language.Demonic:
+                case Language.Titan:
+                case Language.Thalassian:
+                case Language.Draconic:
+                case Language.Kalimag:
+                case Language.Gnomish:
+                case Language.Troll:
+                case Language.Gutterspeak:
+                    return requestedLanguage;
+            }
+
+            return GetDefaultLegacyChatLanguage();
+        }
+
+        private uint GetDefaultLegacyChatLanguage()
+        {
+            Race race = GetSession().GameState.CurrentPlayerInfo != null
+                ? GetSession().GameState.CurrentPlayerInfo.RaceId
+                : Race.None;
+
+            return GameData.IsHordeRace(race)
+                ? (uint)Language.Orcish
+                : (uint)Language.Common;
         }
     }
 }

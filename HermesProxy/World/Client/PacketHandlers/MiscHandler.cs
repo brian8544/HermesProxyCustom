@@ -1,4 +1,4 @@
-﻿using Framework;
+using Framework;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -36,8 +36,12 @@ namespace HermesProxy.World.Client
             {
                 GetSession().RealmSocket.SendFeatureSystemStatus();
                 GetSession().RealmSocket.SendMotd();
-                GetSession().RealmSocket.SendSetTimeZoneInformation();
-                GetSession().RealmSocket.SendSeasonInfo();
+
+                if (Settings.ClientBuild != ClientVersionBuild.V3_3_5a_12340)
+                {
+                    GetSession().RealmSocket.SendSetTimeZoneInformation();
+                    GetSession().RealmSocket.SendSeasonInfo();
+                }
             }
         }
 
@@ -88,6 +92,9 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_WEATHER)]
         void HandleWeather(WorldPacket packet)
         {
+            if (TryForwardLegacyPayloadToWotlkClient(packet))
+                return;
+
             WeatherPkt weather = new WeatherPkt();
             if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
@@ -114,6 +121,14 @@ namespace HermesProxy.World.Client
             if (!GetSession().GameState.IsFirstEnterWorld)
                 return;
 
+            if (IsWotlkFrontendClient())
+            {
+                byte[] legacyPayload = ExtractLegacyPayload(packet);
+                byte[] patchedPayload = PatchLoginSetTimeSpeedPayloadForWotlk(legacyPayload);
+                if (TryForwardLegacyPayloadToWotlkClient(packet, Opcode.MSG_NULL_ACTION, patchedPayload))
+                    return;
+            }
+
             LoginSetTimeSpeed login = new LoginSetTimeSpeed();
             login.ServerTime = packet.ReadUInt32();
             login.GameTime = login.ServerTime;
@@ -124,6 +139,13 @@ namespace HermesProxy.World.Client
                 login.GameTimeHolidayOffset = login.ServerTimeHolidayOffset;
             }
             SendPacketToClient(login);
+        }
+
+        [PacketHandler(Opcode.SMSG_SET_REST_START)]
+        void HandleSetRestStart(WorldPacket packet)
+        {
+            if (TryForwardLegacyPayloadToWotlkClient(packet))
+                return;
         }
 
         [PacketHandler(Opcode.SMSG_AREA_TRIGGER_MESSAGE)]

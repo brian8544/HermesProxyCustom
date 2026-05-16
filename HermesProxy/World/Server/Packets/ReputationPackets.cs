@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System.Collections.Generic;
@@ -27,11 +28,25 @@ namespace HermesProxy.World.Server.Packets
     public class InitializeFactions : ServerPacket
     {
         const ushort FactionCount = 400;
+        const ushort WotlkFactionCount = 128;
 
         public InitializeFactions() : base(Opcode.SMSG_INITIALIZE_FACTIONS, ConnectionType.Instance) { }
 
         public override void Write()
         {
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
+            {
+                // WotLK 3.3.5a expects a fixed 128-entry reputation table, while
+                // vanilla sends 64. Pad missing entries instead of raw-forwarding.
+                _worldPacket.WriteUInt32(WotlkFactionCount);
+                for (ushort i = 0; i < WotlkFactionCount; ++i)
+                {
+                    _worldPacket.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));
+                    _worldPacket.WriteInt32(FactionStandings[i]);
+                }
+                return;
+            }
+
             for (ushort i = 0; i < FactionCount; ++i)
             {
                 _worldPacket.WriteUInt8((byte)((ushort)FactionFlags[i] & 0xFF));

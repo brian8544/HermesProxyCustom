@@ -87,9 +87,9 @@ namespace HermesProxy.World.Client
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
             {
                 var actualTradeId = packet.ReadUInt32();
-                if (actualTradeId != trade.Id)
+                if (actualTradeId != tradeSession.TradeId)
                 {
-                    Log.Print(LogType.Error, $"Got SMSG_TRADE_STATUS_EXTENDED with wrong tradeId (expected {trade.Id} but got {actualTradeId})");
+                    Log.Print(LogType.Error, $"Got SMSG_TRADE_STATUS_EXTENDED with wrong tradeId (expected {tradeSession.TradeId} but got {actualTradeId})");
                     return;
                 }
             }

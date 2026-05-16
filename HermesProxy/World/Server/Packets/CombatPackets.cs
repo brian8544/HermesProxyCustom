@@ -31,7 +31,9 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            Victim = _worldPacket.ReadPackedGuid128();
+            Victim = WotlkMovementPacketCompat.IsWotlkFrontendBuild()
+                ? MovementInfo.LegacyPackedGuidTo128(_worldPacket.ReadGuid())
+                : _worldPacket.ReadPackedGuid128();
         }
 
         public WowGuid128 Victim;

@@ -96,9 +96,9 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_QUEST_GIVER_CHOOSE_REWARD)]
         void HandleQuestGiverChooseReward(QuestGiverChooseReward quest)
         {
-            int choiceIndex = 0;
+            int choiceIndex = quest.RewardIndex >= 0 ? quest.RewardIndex : 0;
 
-            if (quest.Choice.Item.ItemID != 0)
+            if (quest.RewardIndex < 0 && quest.Choice.Item.ItemID != 0)
             {
                 QuestTemplate questTemplate = GameData.GetQuestTemplate(quest.QuestID);
                 if (questTemplate == null)
@@ -123,7 +123,10 @@ namespace HermesProxy.World.Server
                     }
                 }
             }
-            
+
+            if (choiceIndex < 0)
+                choiceIndex = 0;
+             
             WorldPacket packet = new WorldPacket(Opcode.CMSG_QUEST_GIVER_CHOOSE_REWARD);
             packet.WriteGuid(quest.QuestGiverGUID.To64());
             packet.WriteUInt32(quest.QuestID);
