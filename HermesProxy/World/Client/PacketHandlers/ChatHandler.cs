@@ -376,7 +376,7 @@ namespace HermesProxy.World.Client
             {
                 uint originalLanguage = lang;
                 if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 || lang == 0)
-                    lang = GetDefaultLegacyLanguageForPlayer();
+                    lang = GetSession().GameState.GetDefaultLegacyChatLanguage();
 
                 if (originalLanguage != lang)
                     Log.Print(LogType.Debug, $"[WotLK] Normalized vanilla chat language for {type}: {originalLanguage}->{lang}.");
@@ -414,17 +414,6 @@ namespace HermesProxy.World.Client
             }
 
             SendPacket(packet);
-        }
-
-        private uint GetDefaultLegacyLanguageForPlayer()
-        {
-            Race race = GetSession().GameState.CurrentPlayerInfo != null
-                ? GetSession().GameState.CurrentPlayerInfo.RaceId
-                : Race.None;
-
-            return GameData.IsHordeRace(race)
-                ? (uint)Language.Orcish
-                : (uint)Language.Common;
         }
 
         // TODO: make all of these available via HTML ingame support menu (as soon as we can influence the page)

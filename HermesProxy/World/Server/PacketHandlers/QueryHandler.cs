@@ -25,6 +25,28 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_QUERY_CREATURE)]
         void HandleQueryCreature(QueryCreature queryCreature)
         {
+            if (queryCreature.CreatureID == 0 &&
+                queryCreature.Guid != null &&
+                !queryCreature.Guid.IsEmpty() &&
+                queryCreature.Guid.GetEntry() != 0)
+            {
+                queryCreature.CreatureID = queryCreature.Guid.GetEntry();
+            }
+
+            CreatureTemplate cachedCreature = GameData.GetCreatureTemplate(queryCreature.CreatureID);
+            if (cachedCreature != null)
+            {
+                QueryCreatureResponse response = new QueryCreatureResponse
+                {
+                    CreatureID = queryCreature.CreatureID,
+                    Allow = true,
+                    Stats = cachedCreature
+                };
+
+                SendPacket(response);
+                return;
+            }
+
             WorldPacket packet = new WorldPacket(Opcode.CMSG_QUERY_CREATURE);
             packet.WriteUInt32(queryCreature.CreatureID);
             // Forward the original query guid whenever the frontend provided one.

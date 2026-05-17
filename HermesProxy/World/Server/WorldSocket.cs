@@ -2099,7 +2099,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 chatType == (uint)ChatMessageTypeVanilla.BattlegroundAlliance ||
                 chatType == (uint)ChatMessageTypeVanilla.BattlegroundHorde ||
                 chatType == (uint)ChatMessageTypeVanilla.BattlegroundNeutral)
-                return GetDefaultLegacyLanguageForPlayer();
+                return GetSession().GameState.GetDefaultLegacyChatLanguage();
 
             if (IsSupportedLegacyLanguage(requestedLanguage))
                 return requestedLanguage;
@@ -2108,7 +2108,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 chatType == (uint)ChatMessageTypeVanilla.TextEmote)
                 return requestedLanguage;
 
-            return GetDefaultLegacyLanguageForPlayer();
+            return GetSession().GameState.GetDefaultLegacyChatLanguage();
         }
 
         private static bool IsSupportedLegacyLanguage(uint language)
@@ -2133,17 +2133,6 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 default:
                     return false;
             }
-        }
-
-        private uint GetDefaultLegacyLanguageForPlayer()
-        {
-            Race race = GetSession().GameState.CurrentPlayerInfo != null
-                ? GetSession().GameState.CurrentPlayerInfo.RaceId
-                : Race.None;
-
-            return GameData.IsHordeRace(race)
-                ? (uint)Language.Orcish
-                : (uint)Language.Common;
         }
 
         private bool ForwardWotlkPayloadToLegacy(Opcode opcode, byte[] payload, Opcode delayUntilOpcode = Opcode.MSG_NULL_ACTION)
@@ -3933,7 +3922,8 @@ private const int WotlkItemQueryThrottleMs = 1500;
             else
             {
                 payload.WriteUInt32(entry);
-                for (int i = 0; i < 4; ++i)
+                payload.WriteCString(response.Stats?.GetPrimaryName() ?? string.Empty);
+                for (int i = 1; i < 4; ++i)
                     payload.WriteCString(response.Stats.Name[i] ?? string.Empty);
 
                 payload.WriteCString(response.Stats.Title ?? string.Empty);

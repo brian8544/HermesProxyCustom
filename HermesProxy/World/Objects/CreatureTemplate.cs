@@ -35,6 +35,18 @@ namespace HermesProxy.World.Objects
         public uint[] ProxyCreatureID = new uint[CreatureConst.MaxCreatureKillCredit];
         public StringArray Name = new(CreatureConst.MaxCreatureNames);
         public StringArray NameAlt = new(CreatureConst.MaxCreatureNames);
+
+        public string GetPrimaryName()
+        {
+            for (int i = 0; i < CreatureConst.MaxCreatureNames; ++i)
+            {
+                string name = Name[i];
+                if (!string.IsNullOrEmpty(name))
+                    return name;
+            }
+
+            return string.Empty;
+        }
     }
 
     public class CreatureXDisplay

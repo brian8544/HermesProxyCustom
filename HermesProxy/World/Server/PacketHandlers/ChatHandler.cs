@@ -311,7 +311,7 @@ namespace HermesProxy.World.Server
                 return requestedLanguage;
 
             if (_isWotlkFrontend && requestedLanguage != (uint)Language.Addon)
-                return GetDefaultLegacyChatLanguage();
+                return GetSession().GameState.GetDefaultLegacyChatLanguage();
 
             switch ((Language)requestedLanguage)
             {
@@ -331,18 +331,7 @@ namespace HermesProxy.World.Server
                     return requestedLanguage;
             }
 
-            return GetDefaultLegacyChatLanguage();
-        }
-
-        private uint GetDefaultLegacyChatLanguage()
-        {
-            Race race = GetSession().GameState.CurrentPlayerInfo != null
-                ? GetSession().GameState.CurrentPlayerInfo.RaceId
-                : Race.None;
-
-            return GameData.IsHordeRace(race)
-                ? (uint)Language.Orcish
-                : (uint)Language.Common;
+            return GetSession().GameState.GetDefaultLegacyChatLanguage();
         }
     }
 }

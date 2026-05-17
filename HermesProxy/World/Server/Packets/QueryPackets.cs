@@ -557,7 +557,8 @@ namespace HermesProxy.World.Server.Packets
 
                 _worldPacket.WriteUInt32(CreatureID);
 
-                for (int i = 0; i < CreatureConst.MaxCreatureNames; ++i)
+                _worldPacket.WriteCString(Stats?.GetPrimaryName() ?? string.Empty);
+                for (int i = 1; i < CreatureConst.MaxCreatureNames; ++i)
                     _worldPacket.WriteCString(Stats.Name[i] ?? string.Empty);
 
                 _worldPacket.WriteCString(Stats.Title ?? string.Empty);      // sub_name

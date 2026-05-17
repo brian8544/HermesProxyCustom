@@ -287,6 +287,16 @@ namespace HermesProxy
 
             PlayerArenaTeams[guid][slot] = team;
         }
+        public uint GetDefaultLegacyChatLanguage()
+        {
+            Race race = CurrentPlayerInfo != null
+                ? CurrentPlayerInfo.RaceId
+                : Race.None;
+
+            return GameData.IsHordeRace(race)
+                ? (uint)Language.Orcish
+                : (uint)Language.Common;
+        }
         public WowGuid64 GetInventorySlotItem(int slot)
         {
             int PLAYER_FIELD_INV_SLOT_HEAD = LegacyVersion.GetUpdateField(PlayerField.PLAYER_FIELD_INV_SLOT_HEAD);
