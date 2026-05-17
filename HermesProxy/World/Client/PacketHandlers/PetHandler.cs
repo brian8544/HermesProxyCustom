@@ -1,4 +1,5 @@
 ﻿using Framework;
+using Framework.Constants;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -20,6 +21,10 @@ namespace HermesProxy.World.Client
             // Equal to "Clear spells" pre cataclysm
             if (guid.IsEmpty())
             {
+                if (IsWotlkFrontendClient() &&
+                    TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_PET_SPELLS_MESSAGE))
+                    return;
+
                 PetClearSpells clear = new();
                 SendPacketToClient(clear);
                 return;
@@ -29,12 +34,19 @@ namespace HermesProxy.World.Client
             spells.PetGUID = guid.To128(GetSession().GameState);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_1_0_9767))
                 spells.CreatureFamily = packet.ReadUInt16();
+            else
+            {
+                CreatureTemplate template = GameData.GetCreatureTemplate(guid.GetEntry());
+                if (template != null && template.Family > 0)
+                    spells.CreatureFamily = (ushort)Math.Min(template.Family, ushort.MaxValue);
+            }
 
             spells.TimeLimit = packet.ReadUInt32();
             spells.ReactState = (ReactStates)packet.ReadUInt8();
             spells.CommandState = (CommandStates)packet.ReadUInt8();
-            packet.ReadUInt8(); // unused
+            byte flagsLow = packet.ReadUInt8();
             spells.Flag = packet.ReadUInt8();
+            spells.Flags = (ushort)(flagsLow | (spells.Flag << 8));
 
             const int maxCreatureSpells = 10;
             for (int i = 0; i < maxCreatureSpells; i++) // Read pet/vehicle spell ids
@@ -60,8 +72,47 @@ namespace HermesProxy.World.Client
 
                 spells.Cooldowns.Add(cooldown);
             }
+
+            if (TrySendWotlkPetSpells(spells))
+                return;
             
             SendPacketToClient(spells);
+        }
+
+        private bool TrySendWotlkPetSpells(PetSpells spells)
+        {
+            if (!IsWotlkFrontendClient())
+                return false;
+
+            WorldPacket payload = new WorldPacket(Opcode.SMSG_PET_SPELLS_MESSAGE);
+            payload.WriteGuid(spells.PetGUID.To64());
+            payload.WriteUInt16(spells.CreatureFamily);
+            payload.WriteUInt32(spells.TimeLimit);
+            payload.WriteUInt8((byte)spells.ReactState);
+            payload.WriteUInt8((byte)spells.CommandState);
+            payload.WriteUInt16(spells.Flags);
+
+            foreach (uint actionButton in spells.ActionButtons)
+                payload.WriteUInt32(actionButton);
+
+            byte actionCount = (byte)Math.Min(spells.Actions.Count, byte.MaxValue);
+            payload.WriteUInt8(actionCount);
+            for (int i = 0; i < actionCount; ++i)
+                payload.WriteUInt32(spells.Actions[i]);
+
+            byte cooldownCount = (byte)Math.Min(spells.Cooldowns.Count, byte.MaxValue);
+            payload.WriteUInt8(cooldownCount);
+            for (int i = 0; i < cooldownCount; ++i)
+            {
+                PetSpellCooldown cooldown = spells.Cooldowns[i];
+                payload.WriteUInt32(cooldown.SpellID);
+                payload.WriteUInt16(cooldown.Category);
+                payload.WriteUInt32(cooldown.Duration);
+                payload.WriteUInt32(cooldown.CategoryDuration);
+            }
+
+            SendPacketToClient(new RawServerPacket(Opcode.SMSG_PET_SPELLS_MESSAGE, ConnectionType.Instance, payload.GetData()));
+            return true;
         }
 
         [PacketHandler(Opcode.SMSG_PET_ACTION_SOUND)]

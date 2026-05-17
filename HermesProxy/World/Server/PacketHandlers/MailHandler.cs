@@ -13,6 +13,7 @@ namespace HermesProxy.World.Server
     {
         // Handlers for CMSG opcodes coming from the modern client
         [PacketHandler(Opcode.CMSG_QUERY_NEXT_MAIL_TIME)]
+        [PacketHandler(Opcode.MSG_QUERY_NEXT_MAIL_TIME)]
         void HandleMailGetList(EmptyClientPacket mail)
         {
             WorldPacket packet = new WorldPacket(Opcode.MSG_QUERY_NEXT_MAIL_TIME);
@@ -42,7 +43,10 @@ namespace HermesProxy.World.Server
         void HandleMailDelete(MailDelete mail)
         {
             WorldPacket packet = new WorldPacket(Opcode.CMSG_MAIL_DELETE);
-            packet.WriteGuid(GetSession().GameState.CurrentInteractedWithGO.To64());
+            WowGuid128 mailbox = mail.Mailbox != null && !mail.Mailbox.IsEmpty()
+                ? mail.Mailbox
+                : GetSession().GameState.CurrentInteractedWithGO;
+            packet.WriteGuid(mailbox.To64());
             packet.WriteUInt32(mail.MailID);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 packet.WriteUInt32(0); // Mail Template Id
@@ -62,7 +66,10 @@ namespace HermesProxy.World.Server
         void HandleMailReturnToSender(MailReturnToSender mail)
         {
             WorldPacket packet = new WorldPacket(Opcode.CMSG_MAIL_RETURN_TO_SENDER);
-            packet.WriteGuid(GetSession().GameState.CurrentInteractedWithGO.To64());
+            WowGuid128 mailbox = mail.Mailbox != null && !mail.Mailbox.IsEmpty()
+                ? mail.Mailbox
+                : GetSession().GameState.CurrentInteractedWithGO;
+            packet.WriteGuid(mailbox.To64());
             packet.WriteUInt32(mail.MailID);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 packet.WriteGuid(mail.SenderGUID.To64());

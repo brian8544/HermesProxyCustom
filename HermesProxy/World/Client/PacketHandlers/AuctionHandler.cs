@@ -19,7 +19,23 @@ namespace HermesProxy.World.Client
             auction.AuctionHouseID = packet.ReadUInt32();
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_0_10958))
                 auction.OpenForBusiness = packet.ReadBool();
-            SendPacketToClient(auction);
+
+            if (IsWotlkFrontendClient())
+            {
+                // Wrath frontend expects MSG_AUCTION_HELLO and may drop
+                // SMSG_AUCTION_HELLO_RESPONSE if mapping is unavailable.
+                WorldPacket payload = new WorldPacket(Opcode.MSG_AUCTION_HELLO);
+                payload.WriteGuid(auction.Guid.To64());
+                payload.WriteUInt32(auction.AuctionHouseID);
+                payload.WriteUInt8((byte)(auction.OpenForBusiness ? 1 : 0));
+
+                if (!TryForwardLegacyPayloadToWotlkClient(packet, Opcode.MSG_AUCTION_HELLO, payload.GetData()))
+                    SendPacketToClient(auction);
+            }
+            else
+            {
+                SendPacketToClient(auction);
+            }
 
             // Have to send this again here, or server does not reply for some reason.
             WorldPacket packet2 = new WorldPacket(Opcode.CMSG_AUCTION_LIST_OWNED_ITEMS);
@@ -181,7 +197,7 @@ namespace HermesProxy.World.Client
         void HandleAuctionBidderNotification(WorldPacket packet)
         {
             AuctionBidderNotification info = new AuctionBidderNotification();
-            uint auctionHouseId = packet.ReadUInt32();
+            info.Command = packet.ReadUInt32();
             info.AuctionID = packet.ReadUInt32();
             info.Bidder = packet.ReadGuid().To128(GetSession().GameState);
             uint bidAmount = packet.ReadUInt32();

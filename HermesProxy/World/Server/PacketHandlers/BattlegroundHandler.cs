@@ -12,6 +12,31 @@ namespace HermesProxy.World.Server
     public partial class WorldSocket
     {
         // Handlers for CMSG opcodes coming from the modern client
+        [PacketHandler(Opcode.CMSG_BATTLEFIELD_LIST, ClientVersionBuild.Zero, ClientVersionBuild.V2_0_1_6180)]
+        void HandleBattlefieldList(BattlefieldListRequest list)
+        {
+            // 3.3.5 clients can request battleground data from the PvP UI
+            // without a valid vanilla battlemaster context. Suppress that
+            // request for 1.12 backends to avoid invalid bgtype server errors.
+            if (list.FromWhere == 1)
+            {
+                return;
+            }
+
+            uint mapId = GameData.GetMapIdFromBattlegroundId(list.BattlefieldListId);
+            if (mapId == 0 && GameData.GetBattlegroundIdFromMapId(list.BattlefieldListId) != 0)
+                mapId = list.BattlefieldListId;
+
+            if (mapId == 0)
+            {
+                return;
+            }
+
+            WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LIST);
+            packet.WriteUInt32(mapId);
+            SendPacketToServer(packet);
+        }
+
         [PacketHandler(Opcode.CMSG_BATTLEMASTER_JOIN)]
         void HandleBattlefieldJoin(BattlemasterJoin join)
         {

@@ -86,6 +86,7 @@ namespace HermesProxy.World.Server
         private ushort _wotlkClientPacketSize;
         private bool _wotlkSentMovementBootstrap;
         private uint _wotlkMovementBootstrapCounter;
+        private readonly HashSet<uint> _wotlkSyntheticMovementSpeedAckCounters = new();
         private uint _wotlkTimeSyncCounter;
         private ulong _wotlkLastLoginGuidLow;
         private long _wotlkLastLoginUnixMs;
@@ -1497,6 +1498,11 @@ private const int WotlkItemQueryThrottleMs = 1500;
                         HandleWotlkReadyForAccountDataTimes();
                         break;
                     }
+                    case Opcode.CMSG_CALENDAR_GET_CALENDAR:
+                    {
+                        SendWotlkCalendar();
+                        break;
+                    }
                     case Opcode.CMSG_CALENDAR_GET_NUM_PENDING:
                     {
                         SendWotlkCalendarNumPending();
@@ -1507,7 +1513,9 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     case Opcode.CMSG_GAME_OBJ_REPORT_USE:
                     case Opcode.CMSG_GET_ITEM_PURCHASE_DATA:
                     case Opcode.CMSG_DF_GET_JOIN_STATUS:
+                    case Opcode.CMSG_LFG_JOIN:
                     case Opcode.CMSG_LFG_PLAYER_LOCK_INFO_REQUEST:
+                    case Opcode.CMSG_GM_LAG_REPORT:
                     case Opcode.MSG_GUILD_BANK_MONEY_WITHDRAWN:
                     case Opcode.CMSG_VOICE_SESSION_ENABLE:
                     {
@@ -1540,6 +1548,12 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     }
                     case Opcode.CMSG_ZONEUPDATE:
                     case Opcode.CMSG_AREA_TRIGGER:
+                    case Opcode.CMSG_REPOP_REQUEST:
+                    case Opcode.CMSG_RECLAIM_CORPSE:
+                    case Opcode.CMSG_QUERY_CORPSE_LOCATION_FROM_CLIENT:
+                    case Opcode.CMSG_CORPSE_MAP_POSITION_QUERY:
+                    case Opcode.CMSG_CORPSE_QUERY:
+                    case Opcode.MSG_CORPSE_QUERY:
                     {
                         // These packets need state-aware handling during WotLK frontend
                         // same-map teleports.  Do not raw-forward them from this WotLK
@@ -1557,6 +1571,12 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     case Opcode.CMSG_TRAINER_LIST:
                     case Opcode.CMSG_TRAINER_BUY_SPELL:
                     case Opcode.CMSG_BATTLEMASTER_HELLO:
+                    case Opcode.CMSG_BATTLEMASTER_JOIN:
+                    case Opcode.CMSG_BATTLEFIELD_LIST:
+                    case Opcode.CMSG_BATTLEFIELD_PORT:
+                    case Opcode.CMSG_REQUEST_BATTLEFIELD_STATUS:
+                    case Opcode.CMSG_PVP_LOG_DATA:
+                    case Opcode.CMSG_BATTLEFIELD_LEAVE:
                     case Opcode.CMSG_AREA_SPIRIT_HEALER_QUERY:
                     case Opcode.CMSG_AREA_SPIRIT_HEALER_QUEUE:
                     case Opcode.CMSG_QUEST_GIVER_STATUS_QUERY:
@@ -1569,8 +1589,17 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     case Opcode.CMSG_QUEST_GIVER_CHOOSE_REWARD:
                     case Opcode.CMSG_QUEST_LOG_REMOVE_QUEST:
                     case Opcode.CMSG_QUEST_CONFIRM_ACCEPT:
+                    case Opcode.CMSG_QUEST_POI_QUERY:
                     case Opcode.CMSG_PUSH_QUEST_TO_PARTY:
                     case Opcode.CMSG_QUEST_PUSH_RESULT:
+                    case Opcode.CMSG_AUCTION_HELLO_REQUEST:
+                    case Opcode.CMSG_AUCTION_LIST_BIDDED_ITEMS:
+                    case Opcode.CMSG_AUCTION_LIST_OWNED_ITEMS:
+                    case Opcode.CMSG_AUCTION_LIST_ITEMS:
+                    case Opcode.CMSG_AUCTION_LIST_PENDING_SALES:
+                    case Opcode.CMSG_AUCTION_SELL_ITEM:
+                    case Opcode.CMSG_AUCTION_REMOVE_ITEM:
+                    case Opcode.CMSG_AUCTION_PLACE_BID:
                     case Opcode.CMSG_INITIATE_TRADE:
                     case Opcode.CMSG_BEGIN_TRADE:
                     case Opcode.CMSG_BUSY_TRADE:
@@ -1843,6 +1872,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             GetSession().GameState.HasCurrentPlayerPosition = false;
             _wotlkSentMovementBootstrap = false;
             _wotlkMovementBootstrapCounter = 0;
+            _wotlkSyntheticMovementSpeedAckCounters.Clear();
             _wotlkLogoutInProgress = false;
             Packets.UpdateObject.ResetLoginBuffer(GetSession().GameState);
             GetSession().GameState.CurrentPlayerInfo = GetSession().GameState.OwnCharacters.Single(x => x.CharacterGuid == loginGuid128);
@@ -2157,6 +2187,12 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
         private bool TrySendWotlkSpecialPacket(ServerPacket packet)
         {
+            if (packet is CorpseLocation typedCorpseLocation)
+            {
+                SendWotlkCorpseLocation(typedCorpseLocation);
+                return true;
+            }
+
             if (packet is ChatPkt chat)
             {
                 SendWotlkChat(chat);
@@ -2223,9 +2259,45 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 return true;
             }
 
+            if (packet is MailListResult mailList)
+            {
+                SendWotlkMailListResult(mailList);
+                return true;
+            }
+
+            if (packet is MailCommandResult mailCommandResult)
+            {
+                SendWotlkMailCommandResult(mailCommandResult);
+                return true;
+            }
+
             if (packet is MailQueryNextTimeResult mailNextTimeByType)
             {
                 SendWotlkMailQueryNextTimeResult(mailNextTimeByType);
+                return true;
+            }
+
+            if (packet is AuctionWonNotification auctionWon)
+            {
+                SendWotlkAuctionBidderNotification(auctionWon.Info, bidAmount: 0, minIncrement: 0);
+                return true;
+            }
+
+            if (packet is AuctionOutbidNotification auctionOutbid)
+            {
+                SendWotlkAuctionBidderNotification(auctionOutbid.Info, auctionOutbid.BidAmount, auctionOutbid.MinIncrement);
+                return true;
+            }
+
+            if (packet is AuctionClosedNotification auctionClosed)
+            {
+                SendWotlkAuctionOwnerNotification(auctionClosed.Info, minIncrement: 0, WowGuid128.Empty, auctionClosed.ProceedsMailDelay);
+                return true;
+            }
+
+            if (packet is AuctionOwnerBidNotification auctionOwnerBid)
+            {
+                SendWotlkAuctionOwnerNotification(auctionOwnerBid.Info, auctionOwnerBid.MinIncrement, auctionOwnerBid.Bidder, mailDelay: 0);
                 return true;
             }
 
@@ -2238,6 +2310,24 @@ private const int WotlkItemQueryThrottleMs = 1500;
             if (packet is SpellGo spellGo)
             {
                 SendWotlkSpellGo(spellGo);
+                return true;
+            }
+
+            if (packet is SpellPrepare)
+            {
+                // 3.3.5 has no SMSG_SPELL_PREPARE equivalent. Safe to skip; cast flow uses SPELL_START/GO.
+                return true;
+            }
+
+            if (packet is SpellChannelStart spellChannelStart)
+            {
+                SendWotlkSpellChannelStart(spellChannelStart);
+                return true;
+            }
+
+            if (packet is SpellChannelUpdate spellChannelUpdate)
+            {
+                SendWotlkSpellChannelUpdate(spellChannelUpdate);
                 return true;
             }
 
@@ -3000,7 +3090,9 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
             ByteBuffer payload = new();
             WritePackedGuid64(payload, guid);
-            payload.WriteUInt32(_wotlkMovementBootstrapCounter++);
+            uint counter = _wotlkMovementBootstrapCounter++;
+            _wotlkSyntheticMovementSpeedAckCounters.Add(counter);
+            payload.WriteUInt32(counter);
             if (opcode == Opcode.SMSG_FORCE_RUN_SPEED_CHANGE)
                 payload.WriteUInt8(0);
             payload.WriteFloat(speed);
@@ -3801,8 +3893,25 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint unixTime = (uint)Time.UnixTime;
             ByteBuffer payload = new();
             payload.WriteUInt32(unixTime);
-            Log.Print(LogType.Debug, $"[WotLK] Answering CMSG_UI_TIME_REQUEST with SMSG_UI_TIME time={unixTime}.");
+            Log.Print(LogType.Debug, $"[WotLK] Answering CMSG_WORLD_STATE_UI_TIMER_UPDATE with SMSG_WORLD_STATE_UI_TIMER_UPDATE time={unixTime}.");
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_UI_TIME), payload.GetData());
+        }
+
+        private void SendWotlkCalendar()
+        {
+            uint unixTime = (uint)Time.UnixTime;
+            ByteBuffer payload = new();
+
+            payload.WriteUInt32(0); // invites
+            payload.WriteUInt32(0); // events
+            payload.WriteUInt32(unixTime); // server time
+            payload.WritePackedTime(unixTime); // zone time
+            payload.WriteUInt32(0); // active raid lockouts
+            payload.WriteUInt32(1135814400u + 4u * Time.Hour); // default Wrath raid reset reference time
+            payload.WriteUInt32(0); // raid reset definitions
+            payload.WriteUInt32(0); // modified holidays
+
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_CALENDAR_SEND_CALENDAR), payload.GetData());
         }
 
         private void SendWotlkCalendarNumPending()
@@ -3988,6 +4097,130 @@ private const int WotlkItemQueryThrottleMs = 1500;
             }
 
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.MSG_QUERY_NEXT_MAIL_TIME), payload.GetData());
+        }
+
+        private void SendWotlkMailListResult(MailListResult result)
+        {
+            ByteBuffer payload = new();
+            int count = Math.Min(result.Mails.Count, byte.MaxValue);
+
+            payload.WriteUInt32((uint)Math.Max(result.TotalNumRecords, count));
+            payload.WriteUInt8((byte)count);
+
+            for (int i = 0; i < count; ++i)
+            {
+                MailListEntry mail = result.Mails[i];
+                ByteBuffer entry = new();
+
+                entry.WriteInt32(mail.MailID);
+                entry.WriteUInt8((byte)mail.SenderType);
+
+                if (mail.SenderType == MailType.Normal)
+                    entry.WriteUInt64(mail.SenderCharacter == null ? 0ul : mail.SenderCharacter.To64().GetLowValue());
+                else
+                    entry.WriteUInt32(mail.AltSenderID ?? 0);
+
+                entry.WriteUInt32((uint)Math.Min(mail.Cod, uint.MaxValue));
+                entry.WriteUInt32(0); // package/unused in 3.3.5
+                entry.WriteInt32(mail.StationeryID);
+                entry.WriteUInt32((uint)Math.Min(mail.SentMoney, uint.MaxValue));
+                entry.WriteUInt32(mail.Flags);
+                entry.WriteFloat(mail.DaysLeft);
+                entry.WriteInt32(mail.MailTemplateID);
+                entry.WriteCString(mail.Subject ?? string.Empty);
+                entry.WriteCString(mail.Body ?? string.Empty);
+
+                int attachmentCount = Math.Min(mail.Attachments.Count, byte.MaxValue);
+                entry.WriteUInt8((byte)attachmentCount);
+                for (int j = 0; j < attachmentCount; ++j)
+                    WriteWotlkMailAttachment(entry, mail.Attachments[j]);
+
+                byte[] entryData = entry.GetData();
+                payload.WriteUInt16((ushort)Math.Min(entryData.Length + sizeof(ushort), ushort.MaxValue));
+                payload.WriteBytes(entryData);
+            }
+
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_MAIL_LIST_RESULT), payload.GetData());
+        }
+
+        private static void WriteWotlkMailAttachment(ByteBuffer payload, MailAttachedItem item)
+        {
+            payload.WriteUInt8(item.Position);
+            payload.WriteInt32(item.AttachID);
+            payload.WriteUInt32(item.Item?.ItemID ?? 0);
+
+            for (byte slot = 0; slot < 7; ++slot)
+            {
+                ItemEnchantData enchant = null;
+                foreach (ItemEnchantData candidate in item.Enchants)
+                {
+                    if (candidate.Slot == slot)
+                    {
+                        enchant = candidate;
+                        break;
+                    }
+                }
+
+                payload.WriteUInt32(enchant?.ID ?? 0);
+                payload.WriteUInt32(enchant?.Expiration ?? 0);
+                payload.WriteInt32(enchant?.Charges ?? 0);
+            }
+
+            payload.WriteInt32(unchecked((int)(item.Item?.RandomPropertiesID ?? 0)));
+            payload.WriteUInt32(item.Item?.RandomPropertiesSeed ?? 0);
+            payload.WriteUInt32(item.Count);
+            payload.WriteUInt32(unchecked((uint)item.Charges));
+            payload.WriteUInt32(item.MaxDurability);
+            payload.WriteUInt32(item.Durability);
+            payload.WriteUInt8((byte)(item.Unlocked ? 1 : 0));
+        }
+
+        private void SendWotlkMailCommandResult(MailCommandResult result)
+        {
+            ByteBuffer payload = new();
+            payload.WriteUInt32(result.MailID);
+            payload.WriteUInt32((uint)result.Command);
+            payload.WriteUInt32((uint)result.ErrorCode);
+
+            if (result.ErrorCode == MailErrorType.Equip)
+            {
+                payload.WriteUInt32((uint)result.BagResult);
+            }
+            else if (result.Command == MailActionType.AttachmentExpired)
+            {
+                payload.WriteUInt32(result.AttachID);
+                payload.WriteUInt32(result.QtyInInventory);
+            }
+
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_MAIL_COMMAND_RESULT), payload.GetData());
+        }
+
+        private void SendWotlkAuctionBidderNotification(AuctionBidderNotification info, ulong bidAmount, ulong minIncrement)
+        {
+            ByteBuffer payload = new();
+            payload.WriteUInt32(info.Command);
+            payload.WriteUInt32(info.AuctionID);
+            payload.WriteUInt64(info.Bidder == null ? 0ul : info.Bidder.To64().GetLowValue());
+            payload.WriteUInt32((uint)Math.Min(bidAmount, uint.MaxValue));
+            payload.WriteUInt32((uint)Math.Min(minIncrement, uint.MaxValue));
+            payload.WriteUInt32(info.Item?.ItemID ?? 0);
+            payload.WriteUInt32(info.Item?.RandomPropertiesID ?? 0);
+
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_AUCTION_BIDDER_NOTIFICATION), payload.GetData());
+        }
+
+        private void SendWotlkAuctionOwnerNotification(AuctionOwnerNotification info, ulong minIncrement, WowGuid128 bidder, float mailDelay)
+        {
+            ByteBuffer payload = new();
+            payload.WriteUInt32(info.AuctionID);
+            payload.WriteUInt32((uint)Math.Min(info.BidAmount, uint.MaxValue));
+            payload.WriteUInt32((uint)Math.Min(minIncrement, uint.MaxValue));
+            payload.WriteUInt64(bidder == null ? 0ul : bidder.To64().GetLowValue());
+            payload.WriteUInt32(info.Item?.ItemID ?? 0);
+            payload.WriteUInt32(info.Item?.RandomPropertiesID ?? 0);
+            payload.WriteFloat(mailDelay);
+
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_AUCTION_OWNER_NOTIFICATION), payload.GetData());
         }
 
         private void SendWotlkChannelNotifyJoined(ChannelNotifyJoined joined)
@@ -4184,6 +4417,39 @@ private const int WotlkItemQueryThrottleMs = 1500;
             WorldPacket payload = new();
             WriteWotlk335SpellCastData(payload, spellGo.Cast, true);
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_SPELL_GO), payload.GetData());
+        }
+
+        private void SendWotlkSpellChannelStart(SpellChannelStart spellChannelStart)
+        {
+            uint opcode = ModernVersion.GetCurrentOpcode(Opcode.MSG_CHANNEL_START);
+            if (opcode == 0)
+            {
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "[WotLK] Cannot send SpellChannelStart: missing MSG_CHANNEL_START mapping.");
+                return;
+            }
+
+            ByteBuffer payload = new();
+            WritePackedGuid64(payload, spellChannelStart.CasterGUID.To64().GetLowValue());
+            payload.WriteUInt32(spellChannelStart.SpellID);
+            payload.WriteUInt32(spellChannelStart.Duration);
+
+            SendWotlkRawPacket(opcode, payload.GetData());
+        }
+
+        private void SendWotlkSpellChannelUpdate(SpellChannelUpdate spellChannelUpdate)
+        {
+            uint opcode = ModernVersion.GetCurrentOpcode(Opcode.MSG_CHANNEL_UPDATE);
+            if (opcode == 0)
+            {
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "[WotLK] Cannot send SpellChannelUpdate: missing MSG_CHANNEL_UPDATE mapping.");
+                return;
+            }
+
+            ByteBuffer payload = new();
+            WritePackedGuid64(payload, spellChannelUpdate.CasterGUID.To64().GetLowValue());
+            payload.WriteUInt32((uint)Math.Max(0, spellChannelUpdate.TimeRemaining));
+
+            SendWotlkRawPacket(opcode, payload.GetData());
         }
 
         private void SendWotlkAuraUpdate(AuraUpdate auraUpdate)

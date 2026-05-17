@@ -18,6 +18,7 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -25,6 +26,22 @@ using System.Collections.Generic;
 
 namespace HermesProxy.World.Server.Packets
 {
+    static class MailPacketCompatibility
+    {
+        public static bool IsWotlkFrontend => Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340;
+
+        public static uint Remaining(WorldPacket packet)
+        {
+            var stream = packet.GetCurrentStream();
+            return stream.Position >= stream.Length ? 0u : (uint)(stream.Length - stream.Position);
+        }
+
+        public static WowGuid128 ReadWotlkGuidAs128(WorldPacket packet)
+        {
+            return MovementInfo.LegacyPackedGuidTo128(packet.ReadGuid());
+        }
+    }
+
     public class NotifyReceivedMail : ServerPacket
     {
         public NotifyReceivedMail() : base(Opcode.SMSG_NOTIFY_RECEIVED_MAIL) { }
@@ -75,6 +92,12 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
         }
 
@@ -186,6 +209,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
             MailID = _worldPacket.ReadUInt32();
         }
@@ -200,10 +230,20 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                if (MailPacketCompatibility.Remaining(_worldPacket) >= 4)
+                    DeleteReason = _worldPacket.ReadInt32();
+                return;
+            }
+
             MailID = _worldPacket.ReadUInt32();
             DeleteReason = _worldPacket.ReadInt32();
         }
 
+        public WowGuid128 Mailbox;
         public uint MailID;
         public int DeleteReason;
     }
@@ -214,6 +254,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
             MailID = _worldPacket.ReadUInt32();
         }
@@ -228,10 +275,20 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                if (MailPacketCompatibility.Remaining(_worldPacket) >= 8)
+                    SenderGUID = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                return;
+            }
+
             MailID = _worldPacket.ReadUInt32();
             SenderGUID = _worldPacket.ReadPackedGuid128();
         }
 
+        public WowGuid128 Mailbox;
         public uint MailID;
         public WowGuid128 SenderGUID;
     }
@@ -242,6 +299,14 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                AttachID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
             MailID = _worldPacket.ReadUInt32();
             AttachID = _worldPacket.ReadUInt32();
@@ -258,6 +323,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                MailID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
             MailID = _worldPacket.ReadUInt32();
             Money = _worldPacket.ReadInt64();
@@ -274,6 +346,35 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (MailPacketCompatibility.IsWotlkFrontend)
+            {
+                Mailbox = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                Target = _worldPacket.ReadCString();
+                Subject = _worldPacket.ReadCString();
+                Body = _worldPacket.ReadCString();
+                StationeryID = _worldPacket.ReadInt32();
+                _worldPacket.ReadUInt32(); // unused
+
+                byte attachmentCount = _worldPacket.ReadUInt8();
+                for (byte i = 0; i < attachmentCount; ++i)
+                {
+                    Attachments.Add(new MailAttachment
+                    {
+                        AttachPosition = _worldPacket.ReadUInt8(),
+                        ItemGUID = MailPacketCompatibility.ReadWotlkGuidAs128(_worldPacket)
+                    });
+                }
+
+                SendMoney = _worldPacket.ReadUInt32();
+                Cod = _worldPacket.ReadUInt32();
+
+                if (MailPacketCompatibility.Remaining(_worldPacket) >= 8)
+                    _worldPacket.ReadUInt64(); // unused
+                if (MailPacketCompatibility.Remaining(_worldPacket) >= 1)
+                    _worldPacket.ReadUInt8(); // unused
+                return;
+            }
+
             Mailbox = _worldPacket.ReadPackedGuid128();
             StationeryID = _worldPacket.ReadInt32();
             SendMoney = _worldPacket.ReadInt64();

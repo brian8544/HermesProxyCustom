@@ -43,6 +43,16 @@ namespace HermesProxy.World.Server.Packets
         public bool RespondToGiver;
     }
 
+    public class QuestPoiQuery : ClientPacket
+    {
+        public QuestPoiQuery(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            // Intentionally ignored by handler.
+        }
+    }
+
     public class QuestGiverQuestDetails : ServerPacket
     {
         public QuestGiverQuestDetails() : base(Opcode.SMSG_QUEST_GIVER_QUEST_DETAILS)

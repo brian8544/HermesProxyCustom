@@ -56,6 +56,24 @@ namespace HermesProxy.World.Server.Packets
         public bool HasRandomWinToday;
     }
 
+    class BattlefieldListRequest : ClientPacket
+    {
+        public BattlefieldListRequest(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            BattlefieldListId = _worldPacket.ReadUInt32();
+            if (_worldPacket.CanRead())
+                FromWhere = _worldPacket.ReadUInt8();
+            if (_worldPacket.CanRead())
+                CanGainXP = _worldPacket.ReadUInt8();
+        }
+
+        public uint BattlefieldListId;
+        public byte FromWhere;
+        public byte CanGainXP = 1;
+    }
+
     class BattlemasterJoin : ClientPacket
     {
         public BattlemasterJoin(WorldPacket packet) : base(packet) { }

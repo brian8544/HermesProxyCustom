@@ -163,5 +163,11 @@ namespace HermesProxy.World.Server
             packet.WriteUInt8((byte)quest.Result);
             SendPacketToServer(packet);
         }
+
+        [PacketHandler(Opcode.CMSG_QUEST_POI_QUERY, HermesProxy.Enums.ClientVersionBuild.Zero, HermesProxy.Enums.ClientVersionBuild.V3_3_0_10958)]
+        void HandleQuestPoiQuery(QuestPoiQuery query)
+        {
+            _ = query;
+        }
     }
 }

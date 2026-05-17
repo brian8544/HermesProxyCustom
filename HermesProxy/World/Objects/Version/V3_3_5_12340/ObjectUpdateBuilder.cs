@@ -900,6 +900,14 @@ namespace HermesProxy.World.Objects.Version.V3_3_5_12340
                     }
                 }
 
+                // WotLK uses PLAYER_EXPLORED_ZONES_1..128 as uint32 values.
+                // ActivePlayerData stores them packed as uint64 pairs.
+                for (int i = 0; i < 64; i++)
+                {
+                    if (activeData.ExploredZones[i] != null)
+                        m_fields.SetUpdateField<ulong>((int)PlayerField.PLAYER_EXPLORED_ZONES_1 + i * 2, (ulong)activeData.ExploredZones[i]);
+                }
+
                 if (activeData.BlockPercentage != null) m_fields.SetUpdateField<float>((int)PlayerField.PLAYER_BLOCK_PERCENTAGE, (float)activeData.BlockPercentage);
                 if (activeData.DodgePercentage != null) m_fields.SetUpdateField<float>((int)PlayerField.PLAYER_DODGE_PERCENTAGE, (float)activeData.DodgePercentage);
                 if (activeData.ParryPercentage != null) m_fields.SetUpdateField<float>((int)PlayerField.PLAYER_PARRY_PERCENTAGE, (float)activeData.ParryPercentage);
@@ -990,6 +998,19 @@ namespace HermesProxy.World.Objects.Version.V3_3_5_12340
                 if (corpseData.Owner != null) m_fields.SetUpdateField<ulong>((int)CorpseField.CORPSE_FIELD_OWNER, corpseData.Owner.To64().GetLowValue());
                 if (corpseData.PartyGUID != null) m_fields.SetUpdateField<ulong>((int)CorpseField.CORPSE_FIELD_PARTY, corpseData.PartyGUID.To64().GetLowValue());
                 if (corpseData.DisplayID != null) m_fields.SetUpdateField<uint>((int)CorpseField.CORPSE_FIELD_DISPLAY_ID, (uint)corpseData.DisplayID);
+                for (int i = 0; i < 19; i++)
+                {
+                    if (corpseData.Items[i] != null)
+                        m_fields.SetUpdateField<uint>((int)CorpseField.CORPSE_FIELD_ITEM + i, (uint)corpseData.Items[i]);
+                }
+                if (corpseData.RaceId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_1, (byte)corpseData.RaceId, 1);
+                if (corpseData.SexId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_1, (byte)corpseData.SexId, 2);
+                if (corpseData.SkinId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_1, (byte)corpseData.SkinId, 3);
+                if (corpseData.FaceId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_2, (byte)corpseData.FaceId, 0);
+                if (corpseData.HairStyleId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_2, (byte)corpseData.HairStyleId, 1);
+                if (corpseData.HairColorId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_2, (byte)corpseData.HairColorId, 2);
+                if (corpseData.FacialHairId != null) m_fields.SetUpdateField<byte>((int)CorpseField.CORPSE_FIELD_BYTES_2, (byte)corpseData.FacialHairId, 3);
+                if (corpseData.GuildGUID != null) m_fields.SetUpdateField<uint>((int)CorpseField.CORPSE_FIELD_GUILD, (uint)corpseData.GuildGUID.GetCounter());
                 if (corpseData.Flags != null) m_fields.SetUpdateField<uint>((int)CorpseField.CORPSE_FIELD_FLAGS, (uint)corpseData.Flags);
                 if (corpseData.DynamicFlags != null) m_fields.SetUpdateField<uint>((int)CorpseField.CORPSE_FIELD_DYNAMIC_FLAGS, (uint)corpseData.DynamicFlags);
             }

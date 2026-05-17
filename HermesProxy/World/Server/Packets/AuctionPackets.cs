@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * 
  * This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 
 using Framework.Constants;
 using Framework.GameMath;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -25,6 +26,99 @@ using System.Collections.Generic;
 
 namespace HermesProxy.World.Server.Packets
 {
+    static class AuctionPacketCompatibility
+    {
+        public static bool IsWotlkFrontend => Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340;
+
+        public static uint Remaining(WorldPacket packet)
+        {
+            var stream = packet.GetCurrentStream();
+            return stream.Position >= stream.Length ? 0u : (uint)(stream.Length - stream.Position);
+        }
+
+        public static WowGuid128 ReadWotlkGuidAs128(WorldPacket packet)
+        {
+            return MovementInfo.LegacyPackedGuidTo128(packet.ReadGuid());
+        }
+
+        public static bool TryReadUInt32(WorldPacket packet, out uint value)
+        {
+            if (Remaining(packet) >= 4)
+            {
+                value = packet.ReadUInt32();
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        public static bool TryReadInt32(WorldPacket packet, out int value)
+        {
+            if (Remaining(packet) >= 4)
+            {
+                value = packet.ReadInt32();
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        public static bool TryReadUInt8(WorldPacket packet, out byte value)
+        {
+            if (Remaining(packet) >= 1)
+            {
+                value = packet.ReadUInt8();
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        public static void WriteWotlkAuctionItem(WorldPacket data, AuctionItem item)
+        {
+            data.WriteUInt32(item.AuctionID);
+            data.WriteUInt32(item.Item?.ItemID ?? 0);
+
+            for (byte slot = 0; slot < 7; ++slot)
+            {
+                ItemEnchantData enchant = null;
+                foreach (ItemEnchantData candidate in item.Enchantments)
+                {
+                    if (candidate.Slot == slot)
+                    {
+                        enchant = candidate;
+                        break;
+                    }
+                }
+
+                data.WriteUInt32(enchant?.ID ?? 0);
+                data.WriteUInt32(enchant?.Expiration ?? 0);
+                data.WriteInt32(enchant?.Charges ?? 0);
+            }
+
+            data.WriteInt32((int)(item.Item?.RandomPropertiesID ?? 0));
+            data.WriteUInt32(item.Item?.RandomPropertiesSeed ?? 0);
+            data.WriteInt32(item.Count);
+            data.WriteInt32(item.Charges);
+            data.WriteUInt32(0);
+            data.WriteGuid(ToLegacyGuidOrEmpty(item.Owner));
+            data.WriteUInt32((uint)(item.MinBid ?? 0));
+            data.WriteUInt32((uint)(item.MinIncrement ?? 0));
+            data.WriteUInt32((uint)(item.BuyoutPrice ?? 0));
+            data.WriteInt32(item.DurationLeft);
+            data.WriteGuid(ToLegacyGuidOrEmpty(item.Bidder));
+            data.WriteUInt32((uint)(item.BidAmount ?? 0));
+        }
+
+        private static WowGuid64 ToLegacyGuidOrEmpty(WowGuid128 guid)
+        {
+            return guid == null ? WowGuid64.Empty : guid.To64();
+        }
+    }
+
     class AuctionHelloResponse : ServerPacket
     {
         public AuctionHelloResponse() : base(Opcode.SMSG_AUCTION_HELLO_RESPONSE) { }
@@ -47,6 +141,23 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                // uint64 auctioneer, uint32 offset, optional uint32 count + uint32[count] auction ids.
+                // The modern/Classics reader below expects packed 128-bit GUIDs and bit fields,
+                // which causes EndOfStream on Wrath packets and disconnects the client.
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                Offset = _worldPacket.ReadUInt32();
+
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint wotlkAuctionIDCount))
+                {
+                    for (uint i = 0; i < wotlkAuctionIDCount && AuctionPacketCompatibility.Remaining(_worldPacket) >= 4; ++i)
+                        AuctionItemIDs.Add(_worldPacket.ReadUInt32());
+                }
+
+                return;
+            }
+
             Auctioneer = _worldPacket.ReadPackedGuid128();
             Offset = _worldPacket.ReadUInt32();
 
@@ -54,7 +165,7 @@ namespace HermesProxy.World.Server.Packets
             _worldPacket.ResetBitPos();
 
             for (var i = 0; i < auctionIDCount; ++i)
-                AuctionItemIDs[i] = _worldPacket.ReadUInt32();
+                AuctionItemIDs.Add(_worldPacket.ReadUInt32());
         }
 
         public WowGuid128 Auctioneer;
@@ -68,6 +179,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                Offset = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Auctioneer = _worldPacket.ReadPackedGuid128();
             Offset = _worldPacket.ReadUInt32();
         }
@@ -82,6 +200,60 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                // Wrath browse query layout is the legacy auction query, not the modern
+                // bucket/filter bitstream: guid, offset, cstring name, level range,
+                // inventory slot, class, subclass, quality, usable.
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                Offset = _worldPacket.ReadUInt32();
+                Name = _worldPacket.ReadCString();
+                MinLevel = _worldPacket.ReadUInt8();
+                MaxLevel = _worldPacket.ReadUInt8();
+
+                int inventorySlot = -1;
+                int itemClass = -1;
+                int itemSubClass = -1;
+
+                AuctionPacketCompatibility.TryReadInt32(_worldPacket, out inventorySlot);
+                AuctionPacketCompatibility.TryReadInt32(_worldPacket, out itemClass);
+                AuctionPacketCompatibility.TryReadInt32(_worldPacket, out itemSubClass);
+                AuctionPacketCompatibility.TryReadInt32(_worldPacket, out Quality);
+
+                if (AuctionPacketCompatibility.TryReadUInt8(_worldPacket, out byte onlyUsable))
+                    OnlyUsable = onlyUsable != 0;
+
+                // 3.3.5 appends getAll and sort order bytes. Vanilla only needs
+                // usable + optional TBC sort data, but consuming the bytes keeps
+                // packet sniffing/logging aligned and prevents usable from being
+                // inferred from unrelated tail bytes.
+                AuctionPacketCompatibility.TryReadUInt8(_worldPacket, out _);
+                if (AuctionPacketCompatibility.TryReadUInt8(_worldPacket, out byte wotlkSortCount))
+                {
+                    for (byte i = 0; i < wotlkSortCount && AuctionPacketCompatibility.Remaining(_worldPacket) >= 2; ++i)
+                    {
+                        AuctionSort sort = new AuctionSort();
+                        sort.Type = _worldPacket.ReadUInt8();
+                        sort.Direction = _worldPacket.ReadUInt8();
+                        Sorts.Add(sort);
+                    }
+                }
+
+                if (itemClass != -1 || itemSubClass != -1 || inventorySlot != -1)
+                {
+                    ClassFilter classFilter = new ClassFilter { ItemClass = itemClass };
+                    classFilter.SubClassFilters.Add(new SubClassFilter
+                    {
+                        ItemSubclass = itemSubClass,
+                        InvTypeMask = inventorySlot == -1 ? 0u : (uint)inventorySlot
+                    });
+                    ClassFilters.Add(classFilter);
+                    UsesLegacyFilterValues = true;
+                }
+
+                return;
+            }
+
             Offset = _worldPacket.ReadUInt32();
             Auctioneer = _worldPacket.ReadPackedGuid128();
 
@@ -143,6 +315,7 @@ namespace HermesProxy.World.Server.Packets
         public string Name;
         public bool OnlyUsable;
         public bool ExactMatch;
+        public bool UsesLegacyFilterValues;
         public List<ClassFilter> ClassFilters = new List<ClassFilter>();
         public List<AuctionSort> Sorts = new();
     }
@@ -170,6 +343,17 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                _worldPacket.WriteUInt32((uint)Items.Count);
+                foreach (AuctionItem item in Items)
+                    AuctionPacketCompatibility.WriteWotlkAuctionItem(_worldPacket, item);
+
+                _worldPacket.WriteInt32(TotalItemsCount);
+                _worldPacket.WriteUInt32(DesiredDelay);
+                return;
+            }
+
             _worldPacket.WriteInt32(Items.Count);
             _worldPacket.WriteInt32(TotalItemsCount);
             _worldPacket.WriteUInt32(DesiredDelay);
@@ -189,6 +373,17 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                _worldPacket.WriteUInt32((uint)Items.Count);
+                foreach (AuctionItem item in Items)
+                    AuctionPacketCompatibility.WriteWotlkAuctionItem(_worldPacket, item);
+
+                _worldPacket.WriteInt32(TotalItemsCount);
+                _worldPacket.WriteUInt32(DesiredDelay);
+                return;
+            }
+
             _worldPacket.WriteInt32(Items.Count);
             _worldPacket.WriteInt32(TotalItemsCount);
             _worldPacket.WriteUInt32(DesiredDelay);
@@ -373,6 +568,50 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                // uint64 auctioneer, uint32 itemCount, (uint64 itemGuid, uint32 count)*,
+                // uint32 bid, uint32 buyout, uint32 duration.  A vanilla backend still
+                // expects one sell packet per item, so the handler fans these back out.
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+
+                var stream = _worldPacket.GetCurrentStream();
+                long itemCountPosition = stream.Position;
+
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint wotlkItemCount) &&
+                    wotlkItemCount > 0 &&
+                    wotlkItemCount <= 160 &&
+                    AuctionPacketCompatibility.Remaining(_worldPacket) >= wotlkItemCount * 12 + 12)
+                {
+                    for (uint i = 0; i < wotlkItemCount; ++i)
+                    {
+                        WowGuid128 itemGuid = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                        uint useCount = _worldPacket.ReadUInt32();
+                        Items.Add(new AuctionItemForSale { Guid = itemGuid, UseCount = useCount });
+                    }
+
+                    MinBid = _worldPacket.ReadUInt32();
+                    BuyoutPrice = _worldPacket.ReadUInt32();
+                    ExpireTime = _worldPacket.ReadUInt32();
+                    return;
+                }
+
+                // Keep a tolerant fallback for older 0x256 clients using the
+                // single-item layout: auctioneer, itemGuid, bid, buyout, duration.
+                stream.Position = itemCountPosition;
+                WowGuid128 singleItemGuid = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint singleMinBid))
+                    MinBid = singleMinBid;
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint singleBuyoutPrice))
+                    BuyoutPrice = singleBuyoutPrice;
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint singleExpireTime))
+                    ExpireTime = singleExpireTime;
+
+                Items.Add(new AuctionItemForSale { Guid = singleItemGuid, UseCount = 1 });
+                return;
+            }
+
             Auctioneer = _worldPacket.ReadPackedGuid128();
             MinBid = _worldPacket.ReadUInt64();
             BuyoutPrice = _worldPacket.ReadUInt64();
@@ -411,12 +650,39 @@ namespace HermesProxy.World.Server.Packets
         public uint UseCount;
     }
 
+    class AuctionListPendingSales : ClientPacket
+    {
+        public AuctionListPendingSales(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                if (AuctionPacketCompatibility.Remaining(_worldPacket) >= 8)
+                    Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+
+                return;
+            }
+
+            Auctioneer = _worldPacket.ReadPackedGuid128();
+        }
+
+        public WowGuid128 Auctioneer;
+    }
+
     class AuctionRemoveItem : ClientPacket
     {
         public AuctionRemoveItem(WorldPacket packet) : base(packet) { }
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                AuctionID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             Auctioneer = _worldPacket.ReadPackedGuid128();
             AuctionID = _worldPacket.ReadUInt32();
             if (_worldPacket.HasBit())
@@ -470,6 +736,15 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                Auctioneer = AuctionPacketCompatibility.ReadWotlkGuidAs128(_worldPacket);
+                AuctionID = _worldPacket.ReadUInt32();
+                if (AuctionPacketCompatibility.TryReadUInt32(_worldPacket, out uint bidAmount))
+                    BidAmount = bidAmount;
+                return;
+            }
+
             Auctioneer = _worldPacket.ReadPackedGuid128();
             AuctionID = _worldPacket.ReadUInt32();
             BidAmount = _worldPacket.ReadUInt64();
@@ -487,6 +762,31 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Write()
         {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                _worldPacket.WriteUInt32(AuctionID);
+                _worldPacket.WriteUInt32((uint)Command);
+                _worldPacket.WriteUInt32((uint)ErrorCode);
+
+                switch (ErrorCode)
+                {
+                    case AuctionHouseError.Ok:
+                        if (Command == AuctionHouseAction.Bid)
+                            _worldPacket.WriteUInt32((uint)MinIncrement);
+                        break;
+                    case AuctionHouseError.Inventory:
+                        _worldPacket.WriteUInt32((uint)BagResult);
+                        break;
+                    case AuctionHouseError.HigherBid:
+                        _worldPacket.WriteGuid(Guid == null ? WowGuid64.Empty : Guid.To64());
+                        _worldPacket.WriteUInt32((uint)Money);
+                        _worldPacket.WriteUInt32((uint)MinIncrement);
+                        break;
+                }
+
+                return;
+            }
+
             _worldPacket.WriteUInt32(AuctionID);
             _worldPacket.WriteInt32((int)Command);
             _worldPacket.WriteInt32((int)ErrorCode);

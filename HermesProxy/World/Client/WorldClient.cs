@@ -33,6 +33,7 @@ namespace HermesProxy.World.Client
         bool _expectingBackendDisconnectAfterLogout;
         static readonly TimeSpan BackendWorldAuthTimeout = TimeSpan.FromSeconds(15);
         const int BackendWorldAuthPollDelayMs = 10;
+        readonly System.Threading.ManualResetEventSlim _authResultEvent = new(false);
 
         // packet order is not always the same as new client, sometimes we need to delay packet until another one
         Dictionary<Opcode, List<WorldPacket>> _delayedPacketsToServer;
@@ -57,6 +58,7 @@ namespace HermesProxy.World.Client
             _globalSession = globalSession;
             _username = globalSession.Username;
             _isSuccessful = null;
+            _authResultEvent.Reset();
             _delayedPacketsToServer = new Dictionary<Opcode, List<WorldPacket>>();
             _delayedPacketsToClient = new Dictionary<Opcode, List<ServerPacket>>();
             _expectingBackendDisconnectAfterLogout = false;
@@ -74,13 +76,23 @@ namespace HermesProxy.World.Client
             catch (Exception ex)
             {
                 Log.Print(LogType.Error, $"Socket Error: {ex.Message}");
-                _isSuccessful = false;
+                SetAuthResult(false);
             }
 
-            while (_isSuccessful == null)
-            { }
+            if (!_authResultEvent.Wait(BackendWorldAuthTimeout))
+            {
+                Log.Print(LogType.Error, $"WorldClient.ConnectToWorldServer(): timed out waiting for backend auth response after {BackendWorldAuthTimeout.TotalSeconds:0}s.");
+                SetAuthResult(false);
+                Disconnect();
+            }
 
-            return (bool)_isSuccessful;
+            return _isSuccessful == true;
+        }
+
+        private void SetAuthResult(bool value)
+        {
+            _isSuccessful = value;
+            _authResultEvent.Set();
         }
 
         public bool IsAuthenticated()
@@ -206,7 +218,7 @@ namespace HermesProxy.World.Client
             {
                 Log.Print(LogType.Error, $"Connect Error: {ex.Message}");
                 if (_isSuccessful == null)
-                    _isSuccessful = false;
+                    SetAuthResult(false);
             }
         }
 
@@ -240,7 +252,7 @@ namespace HermesProxy.World.Client
                     {
                         Log.PrintNet(LogType.Error, LogNetDir.S2P, "Socket Closed By GameWorldServer (header)");
                         if (_isSuccessful == null)
-                            _isSuccessful = false;
+                            SetAuthResult(false);
                         else if (GetSession().WorldClient == this)
                         {
                             if (ShouldKeepFrontendAliveAfterBackendDisconnect())
@@ -270,7 +282,7 @@ namespace HermesProxy.World.Client
                         {
                             Log.PrintNet(LogType.Error, LogNetDir.S2P, "Socket Closed By GameWorldServer (payload)");
                             if (_isSuccessful == null)
-                                _isSuccessful = false;
+                                SetAuthResult(false);
                             else if (GetSession().WorldClient == this)
                             {
                                 if (ShouldKeepFrontendAliveAfterBackendDisconnect())
@@ -296,7 +308,7 @@ namespace HermesProxy.World.Client
             {
                 Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Backend socket closed ({se.SocketErrorCode}).");
                 if (_isSuccessful == null)
-                    _isSuccessful = false;
+                    SetAuthResult(false);
                 else
                 {
                     Disconnect();
@@ -310,7 +322,7 @@ namespace HermesProxy.World.Client
             {
                 Log.PrintNet(LogType.Error, LogNetDir.S2P, $"Packet Read Error: {e.Message}{Environment.NewLine}{e.StackTrace}");
                 if (_isSuccessful == null)
-                    _isSuccessful = false;
+                    SetAuthResult(false);
                 else
                 {
                     Disconnect();
@@ -355,7 +367,7 @@ namespace HermesProxy.World.Client
             {
                 Log.PrintNet(LogType.Error, LogNetDir.P2S, $"Packet Write Error: {ex.Message}");
                 if (_isSuccessful == null)
-                    _isSuccessful = false;
+                    SetAuthResult(false);
             }
             _sendMutex.ReleaseMutex();
         }
@@ -493,6 +505,9 @@ namespace HermesProxy.World.Client
                 default:
                     if (IsWotlkFrontendClient() && packet.GetOpcode() == 0x021E)
                     {
+                        if (IsCurrentPlayerAtLegacyMaxLevel())
+                            break;
+
                         if (TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_SET_REST_START))
                             break;
                     }
@@ -517,7 +532,7 @@ namespace HermesProxy.World.Client
                         {
                             Log.PrintNet(LogType.Warn, LogNetDir.S2P, $"No handler for opcode {universalOpcode} ({packet.GetOpcode()}) (Got unknown packet from WorldServer)");
                             if (_isSuccessful == null)
-                                _isSuccessful = false;
+                                SetAuthResult(false);
                         }
                     }
                     break;
@@ -558,7 +573,7 @@ namespace HermesProxy.World.Client
             if (sessionKey == null || sessionKey.Length == 0)
             {
                 Log.Print(LogType.Error, "WorldClient.SendAuthResponse(): missing session key.");
-                _isSuccessful = false;
+                SetAuthResult(false);
                 return;
             }
 
@@ -626,7 +641,7 @@ namespace HermesProxy.World.Client
                     _queuePosition = 0;
                     GetSession().RealmSocket.SendAuthWaitQue(_queuePosition);
                 }
-                _isSuccessful = true;
+                SetAuthResult(true);
             }
             else if (result == AuthResult.AUTH_WAIT_QUEUE)
             {
@@ -634,12 +649,12 @@ namespace HermesProxy.World.Client
                 Log.Print(LogType.Network, $"Position in queue is {_queuePosition}.");
                 if (_isSuccessful != null && GetSession().RealmSocket != null)
                     GetSession().RealmSocket.SendAuthWaitQue(_queuePosition);
-                _isSuccessful = true;
+                SetAuthResult(true);
             }
             else
             {
                 Log.Print(LogType.Network, "Authentication failed!");
-                _isSuccessful = false;
+                SetAuthResult(false);
             }
         }
 
@@ -746,6 +761,35 @@ private static readonly HashSet<Opcode> WotlkRawForwardDenyList = new()
                 return false;
 
             return guid.To64().GetLowValue() == current.To64().GetLowValue();
+        }
+
+        private bool IsCurrentPlayerAtLegacyMaxLevel()
+        {
+            if (_globalSession?.GameState == null)
+                return false;
+
+            uint maxLevel = LegacyVersion.GetMaxLevel();
+            if (maxLevel == 0)
+                return false;
+
+            GameSessionData gameState = _globalSession.GameState;
+            WowGuid128 currentPlayer = gameState.CurrentPlayerGuid;
+
+            if (currentPlayer != WowGuid128.Empty)
+            {
+                int cachedUpdateLevel = gameState.GetLegacyFieldValueInt32(currentPlayer, UnitField.UNIT_FIELD_LEVEL);
+                if (cachedUpdateLevel > 0)
+                    return cachedUpdateLevel >= maxLevel;
+
+                if (gameState.CachedPlayers.TryGetValue(currentPlayer, out PlayerCache playerCache) &&
+                    playerCache.Level > 0)
+                    return playerCache.Level >= maxLevel;
+            }
+
+            if (gameState.CurrentPlayerInfo != null && gameState.CurrentPlayerInfo.Level > 0)
+                return gameState.CurrentPlayerInfo.Level >= maxLevel;
+
+            return false;
         }
 
         private static bool ShouldDropUnhandledRawWotlkOpcode(Opcode opcode)

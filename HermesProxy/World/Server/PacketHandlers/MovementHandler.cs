@@ -346,6 +346,14 @@ namespace HermesProxy.World.Server
                           or Opcode.CMSG_MOVE_FORCE_FLIGHT_BACK_SPEED_CHANGE_ACK)
                 return; // This is probably an ack by our swim to fly speed change for vanilla
 
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                Framework.Settings.ServerBuild == ClientVersionBuild.V1_12_1_5875 &&
+                _wotlkSyntheticMovementSpeedAckCounters.Remove(speed.Ack.MoveCounter))
+            {
+                Log.Print(LogType.Debug, $"[WotLK] Dropping synthetic movement speed bootstrap ACK for vanilla: opcode={opcode}, counter={speed.Ack.MoveCounter}, clientSpeed={speed.Speed:0.###}.");
+                return;
+            }
+
             WorldPacket packet = new WorldPacket(opcode);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_2_0_10192))
                 packet.WritePackedGuid(speed.MoverGUID.To64());

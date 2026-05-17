@@ -3296,6 +3296,7 @@ namespace HermesProxy.World.Client
                     updateData.CorpseData.RaceId = (byte)((updates[CORPSE_FIELD_BYTES_1].UInt32Value >> 8) & 0xFF);
                     updateData.CorpseData.SexId = (byte)((updates[CORPSE_FIELD_BYTES_1].UInt32Value >> 16) & 0xFF);
                     byte skin = (byte)((updates[CORPSE_FIELD_BYTES_1].UInt32Value >> 24) & 0xFF);
+                    updateData.CorpseData.SkinId = skin;
 
                     int CORPSE_FIELD_BYTES_2 = LegacyVersion.GetUpdateField(CorpseField.CORPSE_FIELD_BYTES_2);
                     if (CORPSE_FIELD_BYTES_2 >= 0 && updateMaskArray[CORPSE_FIELD_BYTES_2])
@@ -3304,6 +3305,10 @@ namespace HermesProxy.World.Client
                         byte hairStyle = (byte)((updates[CORPSE_FIELD_BYTES_2].UInt32Value >> 8) & 0xFF);
                         byte hairColor = (byte)((updates[CORPSE_FIELD_BYTES_2].UInt32Value >> 16) & 0xFF);
                         byte facialHair = (byte)((updates[CORPSE_FIELD_BYTES_2].UInt32Value >> 24) & 0xFF);
+                        updateData.CorpseData.FaceId = face;
+                        updateData.CorpseData.HairStyleId = hairStyle;
+                        updateData.CorpseData.HairColorId = hairColor;
+                        updateData.CorpseData.FacialHairId = facialHair;
 
                         var customizations = CharacterCustomizations.ConvertLegacyCustomizationsToModern((Race)updateData.CorpseData.RaceId, (Gender)updateData.CorpseData.SexId, (byte)skin, (byte)face, (byte)hairStyle, (byte)hairColor, (byte)facialHair);
                         for (int i = 0; i < 5; i++)

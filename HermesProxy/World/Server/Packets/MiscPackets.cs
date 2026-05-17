@@ -449,7 +449,8 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
-            CheckInstance = _worldPacket.HasBit();
+            if (_worldPacket.CanRead())
+                CheckInstance = _worldPacket.HasBit();
         }
 
         public bool CheckInstance;
@@ -461,6 +462,13 @@ namespace HermesProxy.World.Server.Packets
 
         public override void Read()
         {
+            if (GetUniversalOpcode() == Opcode.CMSG_CORPSE_MAP_POSITION_QUERY)
+            {
+                if (_worldPacket.GetCurrentStream().Length - _worldPacket.GetCurrentStream().Position >= sizeof(uint))
+                    MapID = _worldPacket.ReadUInt32();
+                return;
+            }
+
             if (!_worldPacket.CanRead())
                 return;
 
@@ -470,6 +478,7 @@ namespace HermesProxy.World.Server.Packets
         }
 
         public WowGuid128 Player;
+        public uint? MapID;
     }
 
     public class CorpseLocation : ServerPacket

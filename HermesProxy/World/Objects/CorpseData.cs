@@ -17,6 +17,11 @@ namespace HermesProxy.World.Objects
         public byte? RaceId;
         public byte? SexId;
         public byte? ClassId;
+        public byte? SkinId;
+        public byte? FaceId;
+        public byte? HairStyleId;
+        public byte? HairColorId;
+        public byte? FacialHairId;
         public uint? Flags;
         public uint? DynamicFlags;
         public int? FactionTemplate;

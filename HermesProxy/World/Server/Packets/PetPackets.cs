@@ -73,6 +73,7 @@ namespace HermesProxy.World.Server.Packets
         public ReactStates ReactState;
         public CommandStates CommandState;
         public byte Flag;
+        public ushort Flags;
 
         public uint[] ActionButtons = new uint[10];
 

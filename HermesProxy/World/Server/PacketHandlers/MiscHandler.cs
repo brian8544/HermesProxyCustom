@@ -84,20 +84,57 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_REPOP_REQUEST)]
         void HandleRepopRequest(RepopRequest repop)
         {
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                LegacyVersion.RemovedInVersion(ClientVersionBuild.V3_0_2_9056))
+            {
+                SendWotlkPreResurrect();
+            }
+
             WorldPacket packet = new WorldPacket(Opcode.CMSG_REPOP_REQUEST);
             if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
                 packet.WriteBool(repop.CheckInstance);
             SendPacketToServer(packet);
         }
+
+        private void SendWotlkPreResurrect()
+        {
+            WowGuid128 playerGuid = GetSession().GameState.CurrentPlayerGuid;
+            if (playerGuid == null || playerGuid.IsEmpty())
+                return;
+
+            WorldPacket payload = new();
+            payload.WritePackedGuid(playerGuid.To64());
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_PRE_RESSURECT), payload.GetData());
+            Log.Print(LogType.Debug, "[WotLK] Synthesized SMSG_PRE_RESSURECT for legacy corpse release.");
+        }
+
         [PacketHandler(Opcode.CMSG_QUERY_CORPSE_LOCATION_FROM_CLIENT)]
         [PacketHandler(Opcode.CMSG_CORPSE_MAP_POSITION_QUERY)]
         [PacketHandler(Opcode.CMSG_CORPSE_QUERY)]
         [PacketHandler(Opcode.MSG_CORPSE_QUERY)]
         void HandleQueryCorpseLocationFromClient(QueryCorpseLocationFromClient query)
         {
+            if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
+                query.GetUniversalOpcode() == Opcode.CMSG_CORPSE_MAP_POSITION_QUERY)
+            {
+                SendWotlkCorpseMapPositionQueryResponse();
+                return;
+            }
+
             WorldPacket packet = new WorldPacket(Opcode.MSG_CORPSE_QUERY);
             SendPacketToServer(packet);
         }
+
+        private void SendWotlkCorpseMapPositionQueryResponse()
+        {
+            WorldPacket payload = new();
+            payload.WriteFloat(0.0f);
+            payload.WriteFloat(0.0f);
+            payload.WriteFloat(0.0f);
+            payload.WriteFloat(0.0f);
+            SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_CORPSE_MAP_POSITION_QUERY_RESPONSE), payload.GetData());
+        }
+
         [PacketHandler(Opcode.CMSG_RECLAIM_CORPSE)]
         void HandleReclaimCorpse(ReclaimCorpse corpse)
         {

@@ -55,7 +55,11 @@ namespace HermesProxy.World.Server
             {
                 if (auction.ClassFilters[0].SubClassFilters.Count == 1)
                 {
-                    packet.WriteInt32(ModernToLegacyInventorySlotType(auction.ClassFilters[0].SubClassFilters[0].InvTypeMask));
+                    int inventorySlot = auction.UsesLegacyFilterValues
+                        ? (int)auction.ClassFilters[0].SubClassFilters[0].InvTypeMask
+                        : ModernToLegacyInventorySlotType(auction.ClassFilters[0].SubClassFilters[0].InvTypeMask);
+
+                    packet.WriteInt32(inventorySlot);
                     packet.WriteInt32(auction.ClassFilters[0].ItemClass);
                     packet.WriteInt32(auction.ClassFilters[0].SubClassFilters[0].ItemSubclass);
                 }
@@ -208,6 +212,18 @@ namespace HermesProxy.World.Server
                 packet.WriteUInt32((uint)auction.BuyoutPrice);
                 packet.WriteUInt32(expireTime);
                 SendPacketToServer(packet);
+            }
+        }
+
+        [PacketHandler(Opcode.CMSG_AUCTION_LIST_PENDING_SALES)]
+        void HandleAuctionListPendingSales(AuctionListPendingSales auction)
+        {
+            if (AuctionPacketCompatibility.IsWotlkFrontend)
+            {
+                WorldPacket payload = new WorldPacket();
+                payload.WriteUInt32(0); // count
+                SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_AUCTION_LIST_PENDING_SALES), payload.GetData());
+                return;
             }
         }
 
