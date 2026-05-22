@@ -379,7 +379,7 @@ namespace HermesProxy.World.Client
                     lang = GetSession().GameState.GetDefaultLegacyChatLanguage();
 
                 if (originalLanguage != lang)
-                    Log.Print(LogType.Debug, $"[WotLK] Normalized vanilla chat language for {type}: {originalLanguage}->{lang}.");
+                    Log.Print(LogType.Debug, $"Normalized vanilla chat language for {type}: {originalLanguage}->{lang}.");
             }
             
             WorldPacket packet = new WorldPacket(Opcode.CMSG_MESSAGECHAT);

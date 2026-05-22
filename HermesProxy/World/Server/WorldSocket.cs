@@ -386,7 +386,7 @@ namespace HermesProxy.World.Server
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Movement ACK parse failed for {opcode} (payload={payloadSize}): {ex.Message}");
+                Log.Print(LogType.Warn, $"Movement ACK parse failed for {opcode} (payload={payloadSize}): {ex.Message}");
                 return false;
             }
         }
@@ -1341,7 +1341,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
                 if (universalOpcode != Opcode.CMSG_MOVE_TIME_SKIPPED)
                     if (!IsWotlkMoveMessageOpcode(universalOpcode))
-                        Log.PrintNet(LogType.Debug, LogNetDir.C2P, $"[WotLK] Received opcode {universalOpcode} ({_wotlkClientOpcode}).");
+                        Log.PrintNet(LogType.Debug, LogNetDir.C2P, $"Received opcode {universalOpcode} ({_wotlkClientOpcode}).");
 
                 switch (universalOpcode)
                 {
@@ -1476,7 +1476,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     case Opcode.CMSG_MOVE_GRAVITY_ENABLE_ACK:
                     {
                         if (!TryHandleWotlkMovementAck(packet, universalOpcode, payloadSize))
-                            Log.Print(LogType.Warn, $"[WotLK] Dropped malformed movement ACK {universalOpcode}.");
+                            Log.Print(LogType.Warn, $"Dropped malformed movement ACK {universalOpcode}.");
                         break;
                     }
                     case Opcode.CMSG_MOVE_TELEPORT_ACK:
@@ -1538,6 +1538,12 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     {
                         if (!TryHandleWotlkGameplayOpcode(packet, universalOpcode, payload))
                             return ReadDataHandlerResult.Error;
+                        break;
+                    }
+                    case Opcode.CMSG_LEARN_TALENT:
+                    case Opcode.CMSG_LEARN_PREVIEW_TALENTS:
+                    {
+                        HandlePacket(packet);
                         break;
                     }
                     case Opcode.CMSG_USE_ITEM:
@@ -1622,7 +1628,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     {
                         if (_wotlkLogoutInProgress || GetSession().GameState.CurrentTrade == null)
                         {
-                            Log.Print(LogType.Debug, "[WotLK] Ignoring CMSG_CANCEL_TRADE with no active trade/logout in progress.");
+                            Log.Print(LogType.Debug, "Ignoring CMSG_CANCEL_TRADE with no active trade/logout in progress.");
                             break;
                         }
 
@@ -1802,14 +1808,14 @@ private const int WotlkItemQueryThrottleMs = 1500;
             }
             if (opcode == 0)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"[WotLK] Skipping packet with missing opcode mapping: {packet.GetType().Name} ({packet.GetUniversalOpcode()}).");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Skipping packet with missing opcode mapping: {packet.GetType().Name} ({packet.GetUniversalOpcode()}).");
                 return;
             }
 
             byte[] payload = packet.GetData();
             if (universalOpcode == Opcode.SMSG_UPDATE_OBJECT)
             {
-                Log.Print(LogType.Debug, $"[WotLK] Sending SMSG_UPDATE_OBJECT payload size {payload.Length}.");
+                Log.Print(LogType.Debug, $"Sending SMSG_UPDATE_OBJECT payload size {payload.Length}.");
                 if (_wotlkUpdateObjectSampleCount < 6)
                 {
                     _wotlkUpdateObjectSampleCount++;
@@ -1818,7 +1824,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     string head = payload.Length == 0
                         ? string.Empty
                         : BitConverter.ToString(payload, 0, Math.Min(payload.Length, 24));
-                    Log.Print(LogType.Debug, $"[WotLK] UPDATE_OBJECT head={head} count={objCount} marker16@4={marker}");
+                    Log.Print(LogType.Debug, $"UPDATE_OBJECT head={head} count={objCount} marker16@4={marker}");
                 }
             }
             SendWotlkRawPacket(opcode, payload);
@@ -1839,7 +1845,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             if (_wotlkLastLoginGuidLow == loginGuidLow && (nowMs - _wotlkLastLoginUnixMs) < 1500)
             {
-                Log.Print(LogType.Debug, $"[WotLK] Suppressed duplicate CMSG_PLAYER_LOGIN for guid {loginGuidLow}.");
+                Log.Print(LogType.Debug, $"Suppressed duplicate CMSG_PLAYER_LOGIN for guid {loginGuidLow}.");
                 return true;
             }
             _wotlkLastLoginGuidLow = loginGuidLow;
@@ -1985,7 +1991,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 }
                 backendPacket.WriteCString(message);
 
-                Log.Print(LogType.Debug, $"[WotLK] Chat translate type {wotlkChatType}->{legacyChatType}, language {language}->{normalizedLanguage}.");
+                Log.Print(LogType.Debug, $"Chat translate type {wotlkChatType}->{legacyChatType}, language {language}->{normalizedLanguage}.");
                 _globalSession.WorldClient.SendPacketToServer(backendPacket);
                 return true;
             }
@@ -2705,7 +2711,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             const int MinWotlkUseItemSize = 1 + 1 + 1 + 4 + 8 + 4 + 1;
             if (payload == null || payload.Length < MinWotlkUseItemSize)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Dropping malformed CMSG_USE_ITEM payload: size={payload?.Length ?? 0}.");
+                Log.Print(LogType.Warn, $"Dropping malformed CMSG_USE_ITEM payload: size={payload?.Length ?? 0}.");
                 return true;
             }
 
@@ -2746,14 +2752,14 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 WriteSpellTargets(targets, targetFlags, legacy);
 
                 Log.Print(LogType.Debug,
-                    $"[WotLK] Translated CMSG_USE_ITEM for vanilla: bag={bagIndex}, slot={slot}, castCount={castCount}, spellId={spellId}, spellIndex={spellIndex}, glyphIndex={glyphIndex}, castFlags=0x{castFlags:X2}, targetFlags=0x{(uint)targetFlags:X}.");
+                    $"Translated CMSG_USE_ITEM for vanilla: bag={bagIndex}, slot={slot}, castCount={castCount}, spellId={spellId}, spellIndex={spellIndex}, glyphIndex={glyphIndex}, castFlags=0x{castFlags:X2}, targetFlags=0x{(uint)targetFlags:X}.");
 
                 SendPacketToServer(legacy);
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Dropping malformed CMSG_USE_ITEM after failed translation: {ex.Message}");
+                Log.Print(LogType.Warn, $"Dropping malformed CMSG_USE_ITEM after failed translation: {ex.Message}");
                 return true;
             }
         }
@@ -2792,7 +2798,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Gameplay parser fallback for {opcode}: {ex.Message}");
+                Log.Print(LogType.Warn, $"Gameplay parser fallback for {opcode}: {ex.Message}");
 
                 if (WotlkMovementPacketCompat.IsWotlkFrontendBuild() && opcode == Opcode.CMSG_USE_ITEM)
                     return true;
@@ -2810,7 +2816,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Inventory parser fallback for {opcode}: {ex.Message}");
+                Log.Print(LogType.Warn, $"Inventory parser fallback for {opcode}: {ex.Message}");
                 return ForwardWotlkInventoryOpcodeRaw(opcode, payload);
             }
         }
@@ -2819,7 +2825,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
         {
             if (_globalSession?.WorldClient == null || !_globalSession.WorldClient.IsConnected())
             {
-                Log.Print(LogType.Error, $"[WotLK] Cannot forward {opcode}: world client is disconnected.");
+                Log.Print(LogType.Error, $"Cannot forward {opcode}: world client is disconnected.");
                 return false;
             }
 
@@ -2829,7 +2835,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 {
                     if (payload.Length < 2)
                     {
-                        Log.Print(LogType.Error, $"[WotLK] Malformed CMSG_SWAP_INV_ITEM payload length {payload.Length}.");
+                        Log.Print(LogType.Error, $"Malformed CMSG_SWAP_INV_ITEM payload length {payload.Length}.");
                         return false;
                     }
 
@@ -2848,7 +2854,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 {
                     if (payload.Length < 4)
                     {
-                        Log.Print(LogType.Error, $"[WotLK] Malformed CMSG_SWAP_ITEM payload length {payload.Length}.");
+                        Log.Print(LogType.Error, $"Malformed CMSG_SWAP_ITEM payload length {payload.Length}.");
                         return false;
                     }
 
@@ -2875,7 +2881,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 {
                     if (payload.Length < 2)
                     {
-                        Log.Print(LogType.Error, $"[WotLK] Malformed CMSG_AUTO_EQUIP_ITEM payload length {payload.Length}.");
+                        Log.Print(LogType.Error, $"Malformed CMSG_AUTO_EQUIP_ITEM payload length {payload.Length}.");
                         return false;
                     }
 
@@ -2895,7 +2901,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 {
                     if (payload.Length < 3)
                     {
-                        Log.Print(LogType.Error, $"[WotLK] Malformed CMSG_AUTO_STORE_BAG_ITEM payload length {payload.Length}.");
+                        Log.Print(LogType.Error, $"Malformed CMSG_AUTO_STORE_BAG_ITEM payload length {payload.Length}.");
                         return false;
                     }
 
@@ -2919,7 +2925,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     // guid(8) + dst slot(1) in legacy/WotLK payload.
                     if (payload.Length < 9)
                     {
-                        Log.Print(LogType.Error, $"[WotLK] Malformed CMSG_AUTO_EQUIP_ITEM_SLOT payload length {payload.Length}.");
+                        Log.Print(LogType.Error, $"Malformed CMSG_AUTO_EQUIP_ITEM_SLOT payload length {payload.Length}.");
                         return false;
                     }
 
@@ -2985,7 +2991,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 return;
 
             _wotlkSentMovementBootstrap = true;
-            Log.Print(LogType.Debug, $"[WotLK] Sending movement bootstrap for player {lowGuid:X}: control, unroot, land-walk.");
+            Log.Print(LogType.Debug, $"Sending movement bootstrap for player {lowGuid:X}: control, unroot, land-walk.");
 
             SendWotlkControlUpdate(lowGuid, true);
             SendWotlkMoveFlagPacket(Opcode.SMSG_MOVE_UNROOT, lowGuid, _wotlkMovementBootstrapCounter++);
@@ -3004,7 +3010,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 SequenceIndex = _wotlkTimeSyncCounter++
             };
 
-            Log.Print(LogType.Debug, $"[WotLK] Sending SMSG_TIME_SYNC_REQUEST counter={sync.SequenceIndex} ({reason}).");
+            Log.Print(LogType.Debug, $"Sending SMSG_TIME_SYNC_REQUEST counter={sync.SequenceIndex} ({reason}).");
             SendPacket(sync);
         }
 
@@ -3027,14 +3033,14 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint opcode = GetWotlkOpcode(Opcode.SMSG_CONTROL_UPDATE);
             if (opcode == 0)
             {
-                Log.Print(LogType.Warn, "[WotLK] Cannot send SMSG_CLIENT_CONTROL_UPDATE: missing opcode mapping.");
+                Log.Print(LogType.Warn, "Cannot send SMSG_CLIENT_CONTROL_UPDATE: missing opcode mapping.");
                 return;
             }
 
             ByteBuffer payload = new();
             WritePackedGuid64(payload, guid);
             payload.WriteUInt8(hasControl ? (byte)1 : (byte)0);
-            Log.Print(LogType.Debug, $"[WotLK] Sending SMSG_CLIENT_CONTROL_UPDATE opcode=0x{opcode:X4}, guid={guid:X}, allowMovement={hasControl}.");
+            Log.Print(LogType.Debug, $"Sending SMSG_CLIENT_CONTROL_UPDATE opcode=0x{opcode:X4}, guid={guid:X}, allowMovement={hasControl}.");
             SendWotlkRawPacket(opcode, payload.GetData());
         }
 
@@ -3043,7 +3049,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint modernOpcode = ModernVersion.GetCurrentOpcode(opcode);
             if (modernOpcode == 0)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Cannot send movement bootstrap packet {opcode}: missing opcode mapping.");
+                Log.Print(LogType.Warn, $"Cannot send movement bootstrap packet {opcode}: missing opcode mapping.");
                 return;
             }
 
@@ -3055,7 +3061,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
         private void SendWotlkMovementSpeedBootstrap(ulong guid)
         {
-            Log.Print(LogType.Debug, $"[WotLK] Sending movement speed bootstrap for player {guid:X}.");
+            Log.Print(LogType.Debug, $"Sending movement speed bootstrap for player {guid:X}.");
 
             SendWotlkForceSpeedPacket(Opcode.SMSG_FORCE_WALK_SPEED_CHANGE, guid, MovementInfo.DEFAULT_WALK_SPEED);
             SendWotlkForceSpeedPacket(Opcode.SMSG_FORCE_RUN_SPEED_CHANGE, guid, MovementInfo.DEFAULT_RUN_SPEED);
@@ -3073,7 +3079,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint modernOpcode = ModernVersion.GetCurrentOpcode(opcode);
             if (modernOpcode == 0)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Cannot send movement speed bootstrap packet {opcode}: missing opcode mapping.");
+                Log.Print(LogType.Warn, $"Cannot send movement speed bootstrap packet {opcode}: missing opcode mapping.");
                 return;
             }
 
@@ -3134,7 +3140,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
         {
             if (GetSession()?.AccountDataMgr == null)
             {
-                Log.Print(LogType.Warn, "[WotLK] Ignoring CMSG_READY_FOR_ACCOUNT_DATA_TIMES before account-data manager is ready.");
+                Log.Print(LogType.Warn, "Ignoring CMSG_READY_FOR_ACCOUNT_DATA_TIMES before account-data manager is ready.");
                 return;
             }
 
@@ -3148,7 +3154,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
         {
             if (payload.Length < 12)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Dropped malformed CMSG_UPDATE_ACCOUNT_DATA payload size {payload.Length}.");
+                Log.Print(LogType.Warn, $"Dropped malformed CMSG_UPDATE_ACCOUNT_DATA payload size {payload.Length}.");
                 return;
             }
 
@@ -3160,7 +3166,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
             if (!IsValidWotlkAccountDataType(dataType))
             {
-                Log.Print(LogType.Warn, $"[WotLK] Ignoring invalid account-data update type {dataType}.");
+                Log.Print(LogType.Warn, $"Ignoring invalid account-data update type {dataType}.");
                 return;
             }
 
@@ -3177,7 +3183,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
         {
             if (payload.Length < sizeof(uint))
             {
-                Log.Print(LogType.Warn, $"[WotLK] Dropped malformed CMSG_REQUEST_ACCOUNT_DATA payload size {payload.Length}.");
+                Log.Print(LogType.Warn, $"Dropped malformed CMSG_REQUEST_ACCOUNT_DATA payload size {payload.Length}.");
                 return;
             }
 
@@ -3186,7 +3192,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
             if (!IsValidWotlkAccountDataType(dataType))
             {
-                Log.Print(LogType.Warn, $"[WotLK] Ignoring invalid account-data request type {dataType}.");
+                Log.Print(LogType.Warn, $"Ignoring invalid account-data request type {dataType}.");
                 return;
             }
 
@@ -3219,7 +3225,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
             if (session?.AccountDataMgr == null)
             {
-                Log.Print(LogType.Warn, "[WotLK] Account-data packet arrived before account-data manager was ready.");
+                Log.Print(LogType.Warn, "Account-data packet arrived before account-data manager was ready.");
                 return false;
             }
 
@@ -3229,7 +3235,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                     session.GameState.CurrentPlayerGuid == null ||
                     session.GameState.CurrentPlayerGuid.IsEmpty())
                 {
-                    Log.Print(LogType.Warn, $"[WotLK] Ignoring per-character account-data type {dataType} before player login.");
+                    Log.Print(LogType.Warn, $"Ignoring per-character account-data type {dataType} before player login.");
                     return false;
                 }
 
@@ -3628,7 +3634,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 payload.WriteUInt8((byte)(raidDifficulty >= 2 ? 1 : 0));
             }
 
-            Log.Print(LogType.Debug, $"[WotLK] Repacked PartyUpdate -> SMSG_GROUP_LIST: flags={(ushort)party.PartyFlags}, members={members.Count}, hasSelf={hasSelfInfo}.");
+            Log.Print(LogType.Debug, $"Repacked PartyUpdate -> SMSG_GROUP_LIST: flags={(ushort)party.PartyFlags}, members={members.Count}, hasSelf={hasSelfInfo}.");
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_GROUP_LIST), payload.GetData());
         }
 
@@ -3652,7 +3658,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint opcode = ModernVersion.GetCurrentOpcode(Opcode.SMSG_LEARNED_SPELL);
             if (opcode == 0)
             {
-                Log.Print(LogType.Warn, "[WotLK] Cannot send learned spells: missing SMSG_LEARNED_SPELL opcode mapping.");
+                Log.Print(LogType.Warn, "Cannot send learned spells: missing SMSG_LEARNED_SPELL opcode mapping.");
                 return;
             }
 
@@ -3882,7 +3888,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint unixTime = (uint)Time.UnixTime;
             ByteBuffer payload = new();
             payload.WriteUInt32(unixTime);
-            Log.Print(LogType.Debug, $"[WotLK] Answering CMSG_WORLD_STATE_UI_TIMER_UPDATE with SMSG_WORLD_STATE_UI_TIMER_UPDATE time={unixTime}.");
+            Log.Print(LogType.Debug, $"Answering CMSG_WORLD_STATE_UI_TIMER_UPDATE with SMSG_WORLD_STATE_UI_TIMER_UPDATE time={unixTime}.");
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_UI_TIME), payload.GetData());
         }
 
@@ -4414,7 +4420,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint opcode = ModernVersion.GetCurrentOpcode(Opcode.MSG_CHANNEL_START);
             if (opcode == 0)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "[WotLK] Cannot send SpellChannelStart: missing MSG_CHANNEL_START mapping.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "Cannot send SpellChannelStart: missing MSG_CHANNEL_START mapping.");
                 return;
             }
 
@@ -4431,7 +4437,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             uint opcode = ModernVersion.GetCurrentOpcode(Opcode.MSG_CHANNEL_UPDATE);
             if (opcode == 0)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "[WotLK] Cannot send SpellChannelUpdate: missing MSG_CHANNEL_UPDATE mapping.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, "Cannot send SpellChannelUpdate: missing MSG_CHANNEL_UPDATE mapping.");
                 return;
             }
 
@@ -5246,7 +5252,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
             Opcode universalOpcode = moveSetFlag.GetUniversalOpcode();
             if (universalOpcode == Opcode.MSG_NULL_ACTION)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"[WotLK] Skipping MoveSetFlag with missing universal opcode.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Skipping MoveSetFlag with missing universal opcode.");
                 return;
             }
 
@@ -5254,13 +5260,13 @@ private const int WotlkItemQueryThrottleMs = 1500;
                 moveSetFlag.MoverGUID == GetSession()?.GameState?.CurrentPlayerGuid)
             {
                 universalOpcode = Opcode.SMSG_MOVE_UNROOT;
-                Log.Print(LogType.Debug, "[WotLK] Rewriting self SMSG_MOVE_ROOT to SMSG_MOVE_UNROOT.");
+                Log.Print(LogType.Debug, "Rewriting self SMSG_MOVE_ROOT to SMSG_MOVE_UNROOT.");
             }
 
             uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
             if (opcode == 0)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"[WotLK] Skipping MoveSetFlag with missing opcode mapping: {universalOpcode}.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Skipping MoveSetFlag with missing opcode mapping: {universalOpcode}.");
                 return;
             }
 
@@ -5275,14 +5281,14 @@ private const int WotlkItemQueryThrottleMs = 1500;
             Opcode universalOpcode = moveSplineSetFlag.GetUniversalOpcode();
             if (universalOpcode == Opcode.MSG_NULL_ACTION)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"[WotLK] Skipping MoveSplineSetFlag with missing universal opcode.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Skipping MoveSplineSetFlag with missing universal opcode.");
                 return;
             }
 
             uint opcode = ModernVersion.GetCurrentOpcode(universalOpcode);
             if (opcode == 0)
             {
-                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"[WotLK] Skipping MoveSplineSetFlag with missing opcode mapping: {universalOpcode}.");
+                Log.PrintNet(LogType.Warn, LogNetDir.P2C, $"Skipping MoveSplineSetFlag with missing opcode mapping: {universalOpcode}.");
                 return;
             }
 
@@ -5298,7 +5304,7 @@ private const int WotlkItemQueryThrottleMs = 1500;
 
             if (opcode == 0)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Refusing to send packet with opcode 0 and payload size {payload?.Length ?? 0}.");
+                Log.Print(LogType.Warn, $"Refusing to send packet with opcode 0 and payload size {payload?.Length ?? 0}.");
                 return;
             }
 

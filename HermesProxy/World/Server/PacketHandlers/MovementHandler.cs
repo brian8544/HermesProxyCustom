@@ -39,7 +39,7 @@ namespace HermesProxy.World.Server
             ack.WriteUInt32(ackTime);
 
             Log.Print(LogType.Debug,
-                $"[WotLK] translating client zone/movement confirmation to vanilla ACK: reason={reason}, guid={ackGuid.To64().GetLowValue():X}, counter={counter}, time={ackTime}.");
+                $"translating client zone/movement confirmation to vanilla ACK: reason={reason}, guid={ackGuid.To64().GetLowValue():X}, counter={counter}, time={ackTime}.");
 
             gameState.IsWaitingForWotlkMovementTeleportAck = false;
             gameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
@@ -156,7 +156,7 @@ namespace HermesProxy.World.Server
                     if (!IsClientMovementNearPendingWotlkTeleport(movement.MoveInfo, out float teleportDistanceSq))
                     {
                         Log.Print(LogType.Debug,
-                            $"[WotLK] suppressing stale client movement before teleport ACK: opcode={universalOpcode}, pos=({movement.MoveInfo.Position.X:0.###},{movement.MoveInfo.Position.Y:0.###},{movement.MoveInfo.Position.Z:0.###}), dest=({GetSession().GameState.PendingWotlkMovementTeleportDestination.X:0.###},{GetSession().GameState.PendingWotlkMovementTeleportDestination.Y:0.###},{GetSession().GameState.PendingWotlkMovementTeleportDestination.Z:0.###}), distSq={teleportDistanceSq:0.###}.");
+                            $"suppressing stale client movement before teleport ACK: opcode={universalOpcode}, pos=({movement.MoveInfo.Position.X:0.###},{movement.MoveInfo.Position.Y:0.###},{movement.MoveInfo.Position.Z:0.###}), dest=({GetSession().GameState.PendingWotlkMovementTeleportDestination.X:0.###},{GetSession().GameState.PendingWotlkMovementTeleportDestination.Y:0.###},{GetSession().GameState.PendingWotlkMovementTeleportDestination.Z:0.###}), distSq={teleportDistanceSq:0.###}.");
                         GetSession().GameState.CurrentPlayerPosition = GetSession().GameState.PendingWotlkMovementTeleportDestination;
                         GetSession().GameState.HasCurrentPlayerPosition = true;
                         return;
@@ -205,7 +205,7 @@ namespace HermesProxy.World.Server
                 Log.Print(LogType.Debug, $"[MoveTeleportAck] Unexpected payload size {packet.GetSize()} (expected 16).");
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
                 Framework.Settings.ServerBuild == ClientVersionBuild.V1_12_1_5875)
-                Log.Print(LogType.Debug, $"[WotLK] translating client teleport ACK to vanilla: guid={ackGuid.To64().GetLowValue():X}, counter={counter} (clientField={teleport.MoveCounter}), time={ackTime} (clientField={teleport.MoveTime}), pending={pendingWotlkSameMapTeleport}.");
+                Log.Print(LogType.Debug, $"translating client teleport ACK to vanilla: guid={ackGuid.To64().GetLowValue():X}, counter={counter} (clientField={teleport.MoveCounter}), time={ackTime} (clientField={teleport.MoveTime}), pending={pendingWotlkSameMapTeleport}.");
 
             gameState.IsWaitingForWotlkMovementTeleportAck = false;
             gameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
@@ -236,7 +236,7 @@ namespace HermesProxy.World.Server
                 ack.WriteUInt32(gameState.PendingSyntheticWotlkWorldPortCounter);
                 ack.WriteUInt32(gameState.PendingSyntheticWotlkWorldPortMoveTime);
 
-                Log.Print(LogType.Debug, $"[WotLK] Translating synthetic worldport ACK back to vanilla teleport ACK: guid={gameState.PendingSyntheticWotlkWorldPortGuid.To64().GetLowValue():X}, counter={gameState.PendingSyntheticWotlkWorldPortCounter}, time={gameState.PendingSyntheticWotlkWorldPortMoveTime}.");
+                Log.Print(LogType.Debug, $"Translating synthetic worldport ACK back to vanilla teleport ACK: guid={gameState.PendingSyntheticWotlkWorldPortGuid.To64().GetLowValue():X}, counter={gameState.PendingSyntheticWotlkWorldPortCounter}, time={gameState.PendingSyntheticWotlkWorldPortMoveTime}.");
 
                 gameState.HasPendingSyntheticWotlkWorldPortAck = false;
                 gameState.PendingSyntheticWotlkWorldPortStartTick = 0;
@@ -254,7 +254,7 @@ namespace HermesProxy.World.Server
                 // A 1.12 same-map teleport never expects WORLDPORT_ACK.  If the
                 // Wrath client sends one without a pending real/synthetic worldport,
                 // do not forward it and trip the backend "player is still in world" guard.
-                Log.Print(LogType.Warn, "[WotLK] Dropping unexpected MSG_MOVE_WORLDPORT_ACK for vanilla backend; no pending worldport.");
+                Log.Print(LogType.Warn, "Dropping unexpected MSG_MOVE_WORLDPORT_ACK for vanilla backend; no pending worldport.");
                 FlushPendingWotlkWorldPortUpdates(gameState);
                 return;
             }
@@ -262,7 +262,7 @@ namespace HermesProxy.World.Server
             WorldPacket packet = new WorldPacket(Opcode.MSG_MOVE_WORLDPORT_ACK);
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
             {
-                Log.Print(LogType.Debug, $"[WotLK] WORLDPORT-v14 forwarding real MSG_MOVE_WORLDPORT_ACK and releasing worldport wait: wasWaiting={wasWaitingForWorldPortAck}.");
+                Log.Print(LogType.Debug, $"WORLDPORT-v14 forwarding real MSG_MOVE_WORLDPORT_ACK and releasing worldport wait: wasWaiting={wasWaitingForWorldPortAck}.");
                 gameState.IsWaitingForWorldPortAck = false;
                 gameState.IsWaitingForWotlkMovementTeleportAck = false;
                 gameState.PendingWotlkMovementTeleportGuid = WowGuid128.Empty;
@@ -295,7 +295,7 @@ namespace HermesProxy.World.Server
             updateObject.DestroyedGuids.AddRange(gameState.PendingLoginDestroys);
             updateObject.OutOfRangeGuids.AddRange(gameState.PendingLoginOutOfRangeGuids);
 
-            Log.Print(LogType.Debug, $"[WotLK] Flushing buffered worldport updates after ACK: updates={updateObject.ObjectUpdates.Count}, destroys={updateObject.DestroyedGuids.Count}, oor={updateObject.OutOfRangeGuids.Count}.");
+            Log.Print(LogType.Debug, $"Flushing buffered worldport updates after ACK: updates={updateObject.ObjectUpdates.Count}, destroys={updateObject.DestroyedGuids.Count}, oor={updateObject.OutOfRangeGuids.Count}.");
 
             gameState.PendingLoginUpdates.Clear();
             gameState.PendingLoginDestroys.Clear();
@@ -316,7 +316,7 @@ namespace HermesProxy.World.Server
                 : Environment.TickCount - gameState.WotlkWorldPortObjectStreamSettleStartTick;
 
             Log.Print(LogType.Debug,
-                $"[WotLK] WORLDPORT-v14 releasing held destination objects after client settle: reason={reason}, elapsedMs={elapsed}, updates={gameState.PendingLoginUpdates.Count}, destroys={gameState.PendingLoginDestroys.Count}, oor={gameState.PendingLoginOutOfRangeGuids.Count}.");
+                $"WORLDPORT-v14 releasing held destination objects after client settle: reason={reason}, elapsedMs={elapsed}, updates={gameState.PendingLoginUpdates.Count}, destroys={gameState.PendingLoginDestroys.Count}, oor={gameState.PendingLoginOutOfRangeGuids.Count}.");
 
             gameState.IsSettlingWotlkWorldPortObjectStream = false;
             gameState.WotlkWorldPortObjectStreamSettleStartTick = 0;
@@ -350,7 +350,7 @@ namespace HermesProxy.World.Server
                 Framework.Settings.ServerBuild == ClientVersionBuild.V1_12_1_5875 &&
                 _wotlkSyntheticMovementSpeedAckCounters.Remove(speed.Ack.MoveCounter))
             {
-                Log.Print(LogType.Debug, $"[WotLK] Dropping synthetic movement speed bootstrap ACK for vanilla: opcode={opcode}, counter={speed.Ack.MoveCounter}, clientSpeed={speed.Speed:0.###}.");
+                Log.Print(LogType.Debug, $"Dropping synthetic movement speed bootstrap ACK for vanilla: opcode={opcode}, counter={speed.Ack.MoveCounter}, clientSpeed={speed.Speed:0.###}.");
                 return;
             }
 
@@ -366,7 +366,7 @@ namespace HermesProxy.World.Server
             packet.WriteFloat(ackSpeed);
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
                 Framework.Settings.ServerBuild == ClientVersionBuild.V1_12_1_5875)
-                Log.Print(LogType.Debug, $"[WotLK] Translated {opcode} ACK for vanilla: speed={ackSpeed:0.###} (client={speed.Speed:0.###}), size={packet.GetSize()}.");
+                Log.Print(LogType.Debug, $"Translated {opcode} ACK for vanilla: speed={ackSpeed:0.###} (client={speed.Speed:0.###}), size={packet.GetSize()}.");
             SendPacketToServer(packet);
         }
 
@@ -491,7 +491,7 @@ namespace HermesProxy.World.Server
         void HandleMoveSetActiveMover(SetActiveMover move)
         {
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
-                Log.Print(LogType.Debug, $"[WotLK] Client active mover set to {move.MoverGUID.To64().GetLowValue():X}.");
+                Log.Print(LogType.Debug, $"Client active mover set to {move.MoverGUID.To64().GetLowValue():X}.");
 
             WorldPacket packet = new WorldPacket(Opcode.CMSG_SET_ACTIVE_MOVER);
             packet.WriteGuid(move.MoverGUID.To64());

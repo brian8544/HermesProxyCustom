@@ -520,13 +520,13 @@ namespace HermesProxy.World.Client
                     {
                         if (IsWotlkFrontendClient() && ShouldDropUnhandledRawWotlkOpcode(universalOpcode))
                         {
-                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"[WotLK] Dropped unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
+                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Dropped unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
                             break;
                         }
 
                         if (IsWotlkFrontendClient() && TryForwardLegacyPayloadToWotlkClient(packet))
                         {
-                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"[WotLK] Raw-forwarded unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
+                            Log.PrintNet(LogType.Debug, LogNetDir.S2P, $"Raw-forwarded unhandled opcode {universalOpcode} ({packet.GetOpcode()}).");
                         }
                         else
                         {
@@ -713,8 +713,8 @@ namespace HermesProxy.World.Client
                 Opcode legacyRest = LegacyVersion.GetUniversalOpcode(542);
                 Opcode legacyMonsterMove = LegacyVersion.GetUniversalOpcode(221);
 
-                Log.Print(LogType.Debug, $"[WotLK] Legacy opcode 542 maps to {legacyRest}; handler registered: {_packetHandlers.ContainsKey(legacyRest)}");
-                Log.Print(LogType.Debug, $"[WotLK] Legacy opcode 221 maps to {legacyMonsterMove}; handler registered: {_packetHandlers.ContainsKey(legacyMonsterMove)}");
+                Log.Print(LogType.Debug, $"Legacy opcode 542 maps to {legacyRest}; handler registered: {_packetHandlers.ContainsKey(legacyRest)}");
+                Log.Print(LogType.Debug, $"Legacy opcode 221 maps to {legacyMonsterMove}; handler registered: {_packetHandlers.ContainsKey(legacyMonsterMove)}");
             }
         }
     }    public partial class WorldClient

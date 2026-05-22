@@ -540,6 +540,7 @@ namespace HermesProxy.World
             LoadChatChannels();
             LoadItemEnchantVisuals();
             LoadSpellVisuals();
+            LoadTalentSpells();
             LoadLearnSpells();
             LoadTotemSpells();
             LoadGems();

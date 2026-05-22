@@ -200,6 +200,16 @@ namespace HermesProxy.World.Client
             RespecWipeConfirm respec = new();
             respec.TrainerGUID = packet.ReadGuid().To128(GetSession().GameState);
             respec.Cost = packet.ReadUInt32();
+
+            if (IsWotlkFrontendClient())
+            {
+                WorldPacket payload = new();
+                payload.WriteGuid(respec.TrainerGUID.To64());
+                payload.WriteUInt32(respec.Cost);
+                TryForwardLegacyPayloadToWotlkClient(packet, Opcode.MSG_TALENT_WIPE_CONFIRM, payload.GetData() ?? Array.Empty<byte>());
+                return;
+            }
+
             SendPacketToClient(respec);
         }
 

@@ -240,7 +240,7 @@ namespace HermesProxy.World.Server
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340 &&
                 (cast.Cast.SpellID == 7266 || cast.Cast.SpellID == 7267))
             {
-                Log.Print(LogType.Debug, $"[WotLK] Duel cast request spell={cast.Cast.SpellID}, rawFlags=0x{(uint)cast.Cast.Target.Flags:X}, translatedFlags=0x{(uint)targetFlags:X}, unit={cast.Cast.Target.Unit}");
+                Log.Print(LogType.Debug, $"Duel cast request spell={cast.Cast.SpellID}, rawFlags=0x{(uint)cast.Cast.Target.Flags:X}, translatedFlags=0x{(uint)targetFlags:X}, unit={cast.Cast.Target.Unit}");
             }
 
             WorldPacket packet = new WorldPacket(Opcode.CMSG_CAST_SPELL);
@@ -475,11 +475,27 @@ namespace HermesProxy.World.Server
         [PacketHandler(Opcode.CMSG_LEARN_TALENT)]
         void HandleLearnTalent(LearnTalent talent)
         {
+            ForwardLearnTalent(talent.TalentID, talent.Rank);
+        }
+
+        [PacketHandler(Opcode.CMSG_LEARN_PREVIEW_TALENTS)]
+        void HandleLearnPreviewTalents(LearnPreviewTalents preview)
+        {
+            foreach (var talent in preview.Talents)
+                ForwardLearnTalent(talent.TalentID, talent.Rank);
+        }
+
+        private void ForwardLearnTalent(uint talentId, uint rank)
+        {
+            Log.Print(LogType.Debug, $"Queued talent learn for UI sync: talent={talentId}, rank={rank}.");
+            GetSession().GameState.QueueWotlkTalentLearn(talentId, rank);
+
             WorldPacket packet = new WorldPacket(Opcode.CMSG_LEARN_TALENT);
-            packet.WriteUInt32(talent.TalentID);
-            packet.WriteUInt32(talent.Rank);
+            packet.WriteUInt32(talentId);
+            packet.WriteUInt32(rank);
             SendPacketToServer(packet);
         }
+
         [PacketHandler(Opcode.CMSG_RESURRECT_RESPONSE)]
         void HandleResurrectResponse(ResurrectResponse revive)
         {

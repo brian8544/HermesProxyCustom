@@ -210,7 +210,7 @@ namespace HermesProxy.World.Server
                 // WotLK clients send additional slots for modern bars/totems.
                 if (button.Index >= 120)
                 {
-                    Log.Print(LogType.Debug, $"[WotLK] Dropping CMSG_SET_ACTION_BUTTON for unsupported legacy slot {button.Index} (action={button.ParsedAction}, type={button.ParsedType}).");
+                    Log.Print(LogType.Debug, $"Dropping CMSG_SET_ACTION_BUTTON for unsupported legacy slot {button.Index} (action={button.ParsedAction}, type={button.ParsedType}).");
                     return;
                 }
 

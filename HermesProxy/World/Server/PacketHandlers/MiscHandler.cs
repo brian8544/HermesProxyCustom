@@ -17,7 +17,7 @@ namespace HermesProxy.World.Server
         {
             if (Framework.Settings.ClientBuild == ClientVersionBuild.V3_3_5a_12340)
             {
-                Log.Print(LogType.Debug, $"[WotLK] Received CMSG_TIME_SYNC_RESPONSE counter={response.SequenceIndex}, clientTime={response.ClientTime}.");
+                Log.Print(LogType.Debug, $"Received CMSG_TIME_SYNC_RESPONSE counter={response.SequenceIndex}, clientTime={response.ClientTime}.");
                 FlushPendingWotlkSettledWorldPortUpdates($"CMSG_TIME_SYNC_RESPONSE counter={response.SequenceIndex}");
             }
 
@@ -42,7 +42,7 @@ namespace HermesProxy.World.Server
                 // While a same-map movement teleport is pending, area-trigger packets
                 // can still be from the source zone.  Forwarding those during the
                 // handoff can pull the 1.12 server back toward the old grid/zone.
-                Log.Print(LogType.Debug, $"[WotLK] suppressing stale CMSG_AREA_TRIGGER {at.AreaTriggerID} during teleport ACK wait.");
+                Log.Print(LogType.Debug, $"suppressing stale CMSG_AREA_TRIGGER {at.AreaTriggerID} during teleport ACK wait.");
                 return;
             }
 
@@ -64,7 +64,7 @@ namespace HermesProxy.World.Server
                 // to a 1.12 MaNGOS backend triggers "Delayed Zone Update: invalid
                 // zoneId" and can leave grids/objects in a bad state.
                 Log.Print(LogType.Debug,
-                    $"[WotLK] using CMSG_ZONEUPDATE as teleport ACK and suppressing stale zone id {zone.ZoneID}.");
+                    $"using CMSG_ZONEUPDATE as teleport ACK and suppressing stale zone id {zone.ZoneID}.");
                 CompletePendingWotlkSameMapTeleportFromClient($"CMSG_ZONEUPDATE zone={zone.ZoneID}", 0);
                 return;
             }
@@ -105,7 +105,7 @@ namespace HermesProxy.World.Server
             WorldPacket payload = new();
             payload.WritePackedGuid(playerGuid.To64());
             SendWotlkRawPacket(ModernVersion.GetCurrentOpcode(Opcode.SMSG_PRE_RESSURECT), payload.GetData());
-            Log.Print(LogType.Debug, "[WotLK] Synthesized SMSG_PRE_RESSURECT for legacy corpse release.");
+            Log.Print(LogType.Debug, "Synthesized SMSG_PRE_RESSURECT for legacy corpse release.");
         }
 
         [PacketHandler(Opcode.CMSG_QUERY_CORPSE_LOCATION_FROM_CLIENT)]

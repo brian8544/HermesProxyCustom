@@ -1072,11 +1072,37 @@ namespace HermesProxy.World.Server.Packets
         public override void Read()
         {
             TalentID = _worldPacket.ReadUInt32();
-            Rank = _worldPacket.ReadUInt16();
+            Rank = _worldPacket.ReadUInt32();
         }
 
         public uint TalentID;
-        public ushort Rank;
+        public uint Rank;
+    }
+
+    class LearnPreviewTalents : ClientPacket
+    {
+        public LearnPreviewTalents(WorldPacket packet) : base(packet) { }
+
+        public override void Read()
+        {
+            uint count = _worldPacket.ReadUInt32();
+            for (uint i = 0; i < count; i++)
+            {
+                Talents.Add(new LearnPreviewTalent
+                {
+                    TalentID = _worldPacket.ReadUInt32(),
+                    Rank = _worldPacket.ReadUInt32()
+                });
+            }
+        }
+
+        public List<LearnPreviewTalent> Talents = new();
+    }
+
+    class LearnPreviewTalent
+    {
+        public uint TalentID;
+        public uint Rank;
     }
 
     public class SpellCooldownPkt : ServerPacket

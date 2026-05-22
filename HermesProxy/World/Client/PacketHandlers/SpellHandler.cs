@@ -32,6 +32,10 @@ namespace HermesProxy.World.Client
             }
             if (IsWotlkFrontendClient())
             {
+                int importedTalents = GetSession().GameState.ImportWotlkKnownTalentsFromSpells(spells.KnownSpells);
+                if (importedTalents != 0)
+                    Log.Print(LogType.Debug, $"Imported {importedTalents} known talent spell(s) for UI sync; tracked talents={GetSession().GameState.WotlkKnownTalents.Count}.");
+
                 WorldPacket payload = new();
                 payload.WriteUInt8(spells.InitialLogin ? (byte)1 : (byte)0);
                 payload.WriteUInt16((ushort)Math.Min(spells.KnownSpells.Count, ushort.MaxValue));
@@ -112,6 +116,10 @@ namespace HermesProxy.World.Client
             LearnedSpells spells = new LearnedSpells();
             uint spellId = packet.ReadUInt32();
             spells.Spells.Add(spellId);
+            if (IsWotlkFrontendClient() &&
+                GetSession().GameState.ImportWotlkKnownTalentFromSpell(spellId, out uint talentId, out uint rank))
+                Log.Print(LogType.Debug, $"Learned spell {spellId} maps to talent={talentId}, rank={rank}.");
+
             SendPacketToClient(spells);
         }
 
@@ -170,7 +178,7 @@ namespace HermesProxy.World.Client
             if (packet.CanRead())
                 arg2 = packet.ReadInt32();
             if (spellId == 7266 || spellId == 7267)
-                Log.Print(LogType.Debug, $"[WotLK] Duel cast failed spell={spellId} legacyReason={reason} arg1={arg1} arg2={arg2}");
+                Log.Print(LogType.Debug, $"Duel cast failed spell={spellId} legacyReason={reason} arg1={arg1} arg2={arg2}");
 
             if (GetSession().GameState.CurrentClientSpecialCast != null &&
                 GetSession().GameState.CurrentClientSpecialCast.SpellId == spellId)
@@ -369,7 +377,7 @@ namespace HermesProxy.World.Client
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Failed to parse SMSG_SPELL_START; dropping packet ({ex.Message}).");
+                Log.Print(LogType.Warn, $"Failed to parse SMSG_SPELL_START; dropping packet ({ex.Message}).");
                 return;
             }
 
@@ -380,7 +388,7 @@ namespace HermesProxy.World.Client
                 !GetSession().GameState.WotlkClientKnownObjectGuids.Contains(spell.Cast.CasterUnit))
             {
                 Log.Print(LogType.Warn,
-                    $"[WotLK] Dropping SMSG_SPELL_START/GO from unknown client object caster={spell.Cast.CasterUnit}, spell={spell.Cast.SpellID}.");
+                    $"Dropping SMSG_SPELL_START/GO from unknown client object caster={spell.Cast.CasterUnit}, spell={spell.Cast.SpellID}.");
                 return;
             }
 
@@ -423,7 +431,7 @@ namespace HermesProxy.World.Client
                     GetSession().GameState.LastDispellSpellId = (uint)spell.Cast.SpellID;
             }
             if (spell.Cast.SpellID == 7266 || spell.Cast.SpellID == 7267)
-                Log.Print(LogType.Debug, $"[WotLK] Duel spell start spell={spell.Cast.SpellID} caster={spell.Cast.CasterUnit} hits={spell.Cast.HitTargets.Count} misses={spell.Cast.MissTargets.Count}");
+                Log.Print(LogType.Debug, $"Duel spell start spell={spell.Cast.SpellID} caster={spell.Cast.CasterUnit} hits={spell.Cast.HitTargets.Count} misses={spell.Cast.MissTargets.Count}");
 
             SendPacketToClient(spell);
 
@@ -454,7 +462,7 @@ namespace HermesProxy.World.Client
             }
             catch (Exception ex)
             {
-                Log.Print(LogType.Warn, $"[WotLK] Failed to parse SMSG_SPELL_GO; dropping packet ({ex.Message}).");
+                Log.Print(LogType.Warn, $"Failed to parse SMSG_SPELL_GO; dropping packet ({ex.Message}).");
                 return;
             }
             if (IsWotlkFrontendClient() &&
@@ -463,7 +471,7 @@ namespace HermesProxy.World.Client
                 !GetSession().GameState.WotlkClientKnownObjectGuids.Contains(spell.Cast.CasterUnit))
             {
                 Log.Print(LogType.Warn,
-                    $"[WotLK] Dropping SMSG_SPELL_START/GO from unknown client object caster={spell.Cast.CasterUnit}, spell={spell.Cast.SpellID}.");
+                    $"Dropping SMSG_SPELL_START/GO from unknown client object caster={spell.Cast.CasterUnit}, spell={spell.Cast.SpellID}.");
                 return;
             }
 
@@ -502,7 +510,7 @@ namespace HermesProxy.World.Client
                     GetSession().GameState.StoreLastAuraCasterOnTarget(target, (uint)spell.Cast.SpellID, spell.Cast.CasterUnit);
             }
             if (spell.Cast.SpellID == 7266 || spell.Cast.SpellID == 7267)
-                Log.Print(LogType.Debug, $"[WotLK] Duel spell go spell={spell.Cast.SpellID} caster={spell.Cast.CasterUnit} hits={spell.Cast.HitTargets.Count} misses={spell.Cast.MissTargets.Count}");
+                Log.Print(LogType.Debug, $"Duel spell go spell={spell.Cast.SpellID} caster={spell.Cast.CasterUnit} hits={spell.Cast.HitTargets.Count} misses={spell.Cast.MissTargets.Count}");
                 
             SendPacketToClient(spell);
         }
@@ -1094,6 +1102,12 @@ namespace HermesProxy.World.Client
         [PacketHandler(Opcode.SMSG_PLAY_SPELL_VISUAL)]
         void HandlePlaySpellVisualKit(WorldPacket packet)
         {
+            if (IsWotlkFrontendClient())
+            {
+                TryForwardLegacyPayloadToWotlkClient(packet, Opcode.SMSG_PLAY_SPELL_VISUAL);
+                return;
+            }
+
             PlaySpellVisualKit spell = new();
             spell.Unit = packet.ReadGuid().To128(GetSession().GameState);
             spell.KitRecID = packet.ReadUInt32();
@@ -1229,5 +1243,3 @@ namespace HermesProxy.World.Client
         }
     }
 }
-
-

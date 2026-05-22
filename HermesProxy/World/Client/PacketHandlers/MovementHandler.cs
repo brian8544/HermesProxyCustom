@@ -1,4 +1,4 @@
-﻿using Framework.GameMath;
+using Framework.GameMath;
 using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
@@ -39,7 +39,7 @@ namespace HermesProxy.World.Client
                 gameState.PendingWotlkMovementTeleportGuid == WowGuid128.Empty)
                 return;
 
-            Log.Print(LogType.Warn, $"[WotLK] clearing pending movement teleport state ({reason}).");
+            Log.Print(LogType.Warn, $"clearing pending movement teleport state ({reason}).");
 
             gameState.IsWaitingForWotlkMovementTeleportAck = false;
             gameState.PendingLegacyTeleportCounter = null;
@@ -79,7 +79,7 @@ namespace HermesProxy.World.Client
             ulong moverLow = guid.To64().GetLowValue();
             ulong currentLow = gameState.CurrentPlayerGuid.To64().GetLowValue();
             Log.Print(LogType.Debug,
-                $"[WotLK] Detected far server MSG_MOVE_TELEPORT; deferring raw movement and forcing next teleport ACK into worldport path: " +
+                $"Detected far server MSG_MOVE_TELEPORT; deferring raw movement and forcing next teleport ACK into worldport path: " +
                 $"mover={moverLow:X}, current={currentLow:X}, old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
                 $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
                 $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}.");
@@ -109,7 +109,7 @@ namespace HermesProxy.World.Client
                     Position oldPosition = gameState.PendingWotlkFarServerTeleportStartPosition;
                     bool far = IsFarFromPosition(oldPosition, moveInfo, out float dx, out float dy, out float dz, out float distanceSq);
                     Log.Print(LogType.Debug,
-                        $"[WotLK] Promoting teleport ACK because prior MSG_MOVE_TELEPORT was far: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"Promoting teleport ACK because prior MSG_MOVE_TELEPORT was far: mover={moverLow:X}, current={currentLow:X}, " +
                         $"old=({oldPosition.X:0.###},{oldPosition.Y:0.###},{oldPosition.Z:0.###}), " +
                         $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
                         $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}, promote={far}.");
@@ -117,7 +117,7 @@ namespace HermesProxy.World.Client
                 }
 
                 Log.Print(LogType.Debug,
-                    $"[WotLK] Pending far server teleport did not match this ACK: mover={moverLow:X}, current={currentLow:X}, destDistanceSq={destDistanceSq:0.###}, selfOrUnknown={selfOrUnknown}.");
+                    $"Pending far server teleport did not match this ACK: mover={moverLow:X}, current={currentLow:X}, destDistanceSq={destDistanceSq:0.###}, selfOrUnknown={selfOrUnknown}.");
             }
 
             // Vanilla MSG_MOVE_TELEPORT_ACK is a server-directed teleport for the local
@@ -127,7 +127,7 @@ namespace HermesProxy.World.Client
             // know it belongs to a different mover.
             if (currentLow != 0 && moverLow != 0 && moverLow != currentLow)
             {
-                Log.Print(LogType.Debug, $"[WotLK] Not promoting legacy teleport for non-self mover: mover={moverLow:X}, current={currentLow:X}.");
+                Log.Print(LogType.Debug, $"Not promoting legacy teleport for non-self mover: mover={moverLow:X}, current={currentLow:X}.");
                 return false;
             }
 
@@ -144,7 +144,7 @@ namespace HermesProxy.World.Client
                 {
                     bool far = IsFarFromPosition(gameState.CurrentPlayerPosition, moveInfo, out float dx, out float dy, out float dz, out float distanceSq);
                     Log.Print(LogType.Debug,
-                        $"[WotLK] Forcing vanilla teleport ACK through NEW_WORLD: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"Forcing vanilla teleport ACK through NEW_WORLD: mover={moverLow:X}, current={currentLow:X}, " +
                         $"old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
                         $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
                         $"delta=({dx:0.###},{dy:0.###},{dz:0.###}), distanceSq={distanceSq:0.###}, far={far}.");
@@ -152,7 +152,7 @@ namespace HermesProxy.World.Client
                 else
                 {
                     Log.Print(LogType.Debug,
-                        $"[WotLK] Forcing vanilla teleport ACK through NEW_WORLD without prior position: mover={moverLow:X}, current={currentLow:X}, " +
+                        $"Forcing vanilla teleport ACK through NEW_WORLD without prior position: mover={moverLow:X}, current={currentLow:X}, " +
                         $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
                 }
                 return true;
@@ -160,14 +160,14 @@ namespace HermesProxy.World.Client
 
             if (!gameState.HasCurrentPlayerPosition)
             {
-                Log.Print(LogType.Debug, $"[WotLK] Cannot classify legacy teleport distance yet; missing current player position (mover={moverLow:X}, current={currentLow:X}).");
+                Log.Print(LogType.Debug, $"Cannot classify legacy teleport distance yet; missing current player position (mover={moverLow:X}, current={currentLow:X}).");
                 return false;
             }
 
             bool promote = IsFarFromPosition(gameState.CurrentPlayerPosition, moveInfo, out float normalDx, out float normalDy, out float normalDz, out float normalDistanceSq);
 
             Log.Print(LogType.Debug,
-                $"[WotLK] Legacy teleport distance classification: mover={moverLow:X}, current={currentLow:X}, " +
+                $"Legacy teleport distance classification: mover={moverLow:X}, current={currentLow:X}, " +
                 $"old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), " +
                 $"new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), " +
                 $"delta=({normalDx:0.###},{normalDy:0.###},{normalDz:0.###}), distanceSq={normalDistanceSq:0.###}, limitSq={(WotlkSyntheticFarTeleportDistance * WotlkSyntheticFarTeleportDistance):0.###}, promote={promote}.");
@@ -207,7 +207,7 @@ namespace HermesProxy.World.Client
                 Reason = 4
             };
 
-            Log.Print(LogType.Debug, $"[WotLK] Promoting vanilla legacy teleport to WotLK NEW_WORLD: map={newWorld.MapID}, counter={teleport.MoveCounter}, old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
+            Log.Print(LogType.Debug, $"Promoting vanilla legacy teleport to WotLK NEW_WORLD: map={newWorld.MapID}, counter={teleport.MoveCounter}, old=({gameState.CurrentPlayerPosition.X:0.###},{gameState.CurrentPlayerPosition.Y:0.###},{gameState.CurrentPlayerPosition.Z:0.###}), new=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
             SendPacketToClient(pending);
             SendPacketToClient(newWorld);
             RememberCurrentPlayerPosition(moveInfo);
@@ -265,7 +265,7 @@ namespace HermesProxy.World.Client
             {
                 ulong moverLow = moverGuid.To64().GetLowValue();
                 ulong currentLow = GetSession().GameState.CurrentPlayerGuid.To64().GetLowValue();
-                Log.Print(LogType.Debug, $"[WotLK] Backend movement {outgoingOpcode}: mover={moverLow:X}, current={currentLow:X}, flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), o={moveInfo.Orientation:0.###}.");
+                Log.Print(LogType.Debug, $"Backend movement {outgoingOpcode}: mover={moverLow:X}, current={currentLow:X}, flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), o={moveInfo.Orientation:0.###}.");
             }
 
             if (IsWotlkFrontendClient() &&
@@ -293,7 +293,7 @@ namespace HermesProxy.World.Client
                         moveInfo.Orientation);
 
                     Log.Print(LogType.Debug,
-                        $"[WotLK] Suppressing backend MSG_MOVE_TELEPORT and forcing next teleport ACK through NEW_WORLD: " +
+                        $"Suppressing backend MSG_MOVE_TELEPORT and forcing next teleport ACK through NEW_WORLD: " +
                         $"pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}), map={gameState.CurrentMapId?.ToString() ?? "unknown"}.");
                 }
                 return;
@@ -354,7 +354,7 @@ namespace HermesProxy.World.Client
                 IsCurrentPlayerGuid(control.Guid) &&
                 !control.HasControl)
             {
-                Log.Print(LogType.Debug, "[WotLK] Overriding SMSG_CONTROL_UPDATE(false) to true for active player.");
+                Log.Print(LogType.Debug, "Overriding SMSG_CONTROL_UPDATE(false) to true for active player.");
                 control.HasControl = true;
             }
 
@@ -428,7 +428,7 @@ namespace HermesProxy.World.Client
                 UpdateObject.ResetLoginBuffer(GetSession().GameState);
 
                 Log.Print(LogType.Debug,
-                    $"[WotLK] sending MSG_MOVE_TELEPORT and waiting for zone/movement ACK: guid={guid.To64().GetLowValue():X}, counter={teleport.MoveCounter}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
+                    $"sending MSG_MOVE_TELEPORT and waiting for zone/movement ACK: guid={guid.To64().GetLowValue():X}, counter={teleport.MoveCounter}, pos=({moveInfo.Position.X:0.###},{moveInfo.Position.Y:0.###},{moveInfo.Position.Z:0.###}).");
                 SendPacketToClient(teleportMove);
                 RememberCurrentPlayerPosition(moveInfo);
                 return;
@@ -448,7 +448,7 @@ namespace HermesProxy.World.Client
                 // silently ACKing it here.  The 3.3.5 client needs the synthetic
                 // TRANSFER_PENDING/NEW_WORLD path first; otherwise it can receive
                 // destination object updates while still in the previous world state.
-                Log.Print(LogType.Error, $"[WotLK] BLOCKED unsafe legacy teleport auto-ACK: counter={moveCounter}, time={moveTime}. This should have gone through NEW_WORLD.");
+                Log.Print(LogType.Error, $"BLOCKED unsafe legacy teleport auto-ACK: counter={moveCounter}, time={moveTime}. This should have gone through NEW_WORLD.");
                 return;
             }
 
@@ -473,7 +473,7 @@ namespace HermesProxy.World.Client
             {
                 if (IsWotlkFrontendClient())
                 {
-                    Log.Print(LogType.Warn, "[WotLK] Received SMSG_TRANSFER_PENDING while still waiting for worldport ACK; clearing stale state and starting the new transfer.");
+                    Log.Print(LogType.Warn, "Received SMSG_TRANSFER_PENDING while still waiting for worldport ACK; clearing stale state and starting the new transfer.");
                     GetSession().GameState.IsWaitingForWorldPortAck = false;
                     GetSession().GameState.IsWaitingForNewWorld = false;
                     GetSession().GameState.HasPendingSyntheticWotlkWorldPortAck = false;

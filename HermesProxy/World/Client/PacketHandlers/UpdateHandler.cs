@@ -1,5 +1,6 @@
 //#define DEBUG_UPDATES
 
+using Framework.Constants;
 using Framework.GameMath;
 using Framework.Logging;
 using Framework.Util;
@@ -366,7 +367,7 @@ namespace HermesProxy.World.Client
                     gameState.IsSettlingWotlkWorldPortObjectStream = true;
                     gameState.WotlkWorldPortObjectStreamSettleStartTick = Environment.TickCount;
                     Log.Print(LogType.Debug,
-                        "[WotLK] WORLDPORT-v14 starting destination object settle window at self create.");
+                        "WORLDPORT-v14 starting destination object settle window at self create.");
                 }
 
                 if (gameState.IsSettlingWotlkWorldPortObjectStream)
@@ -382,6 +383,7 @@ namespace HermesProxy.World.Client
                         (upd.Type == UpdateTypeModern.CreateObject1 || upd.Type == UpdateTypeModern.CreateObject2));
 
                     SendWotlkUpdateObjectBatches(updateObject, otherUpdates);
+                    SendWotlkTalentInfoIfNeeded(otherUpdates);
                 }
 
                 if (playerValuesUpdates.Count != 0)
@@ -390,11 +392,12 @@ namespace HermesProxy.World.Client
                     UpdateObject playerUpdateObject = new UpdateObject(GetSession().GameState);
                     playerUpdateObject.ObjectUpdates.AddRange(playerValuesUpdates);
                     SendPacketToClient(playerUpdateObject);
+                    SendWotlkTalentInfoIfNeeded(playerValuesUpdates);
                 }
 
                 if (sentSelfCreate)
                 {
-                    Log.Print(LogType.Debug, "[WotLK] Re-sending movement bootstrap and time sync after self create.");
+                    Log.Print(LogType.Debug, "Re-sending movement bootstrap and time sync after self create.");
                     GetSession().InstanceSocket?.SendWotlkMovementBootstrap(force: true);
                     GetSession().InstanceSocket?.SendWotlkTimeSyncRequest("after self create");
                 }
@@ -409,6 +412,105 @@ namespace HermesProxy.World.Client
 
             foreach (var auraUpdate in auraUpdates)
                 SendPacketToClient(auraUpdate);
+        }
+
+        private void SendWotlkTalentInfoIfNeeded(IEnumerable<ObjectUpdate> updates)
+        {
+            if (!IsWotlkFrontendClient())
+                return;
+
+            WowGuid128 playerGuid = GetSession().GameState.CurrentPlayerGuid;
+            foreach (ObjectUpdate update in updates)
+            {
+                if (update.Guid != playerGuid)
+                    continue;
+
+                if (update.Type == UpdateTypeModern.CreateObject1 ||
+                    update.Type == UpdateTypeModern.CreateObject2 ||
+                    update.ActivePlayerData.CharacterPoints != null)
+                {
+                    SendWotlkTalentInfo(update.ActivePlayerData.CharacterPoints ?? GetCurrentLegacyTalentPoints());
+                    return;
+                }
+            }
+        }
+
+        private int GetCurrentLegacyTalentPoints()
+        {
+            int field = LegacyVersion.GetUpdateField(PlayerField.PLAYER_CHARACTER_POINTS1);
+            if (field < 0)
+                return 0;
+
+            var updates = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
+            if (updates == null || !updates.TryGetValue(field, out UpdateField value))
+                return 0;
+
+            return value.Int32Value;
+        }
+
+        private int GetCurrentLegacyLevel()
+        {
+            int field = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_LEVEL);
+            if (field >= 0)
+            {
+                var updates = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
+                if (updates != null && updates.TryGetValue(field, out UpdateField value))
+                    return value.Int32Value;
+            }
+
+            return GetSession().GameState.CurrentPlayerInfo?.Level ?? 0;
+        }
+
+        private static int GetExpectedTalentPointsForLevel(int level)
+        {
+            if (level <= 9)
+                return 0;
+
+            int cap = LegacyVersion.ExpansionVersion switch
+            {
+                1 => 51,
+                2 => 61,
+                _ => 71
+            };
+
+            return Math.Min(level - 9, cap);
+        }
+
+        private void SendWotlkTalentInfo(int talentPoints)
+        {
+            int safeTalentPoints = Math.Max(0, talentPoints);
+            var gameState = GetSession().GameState;
+            gameState.NoteWotlkTalentPoints(safeTalentPoints);
+            var knownTalents = gameState.WotlkKnownTalents
+                .OrderBy(talent => talent.Key)
+                .Take(byte.MaxValue)
+                .ToList();
+
+            WorldPacket payload = new();
+            payload.WriteUInt8(0); // player talents, not pet talents
+            payload.WriteUInt32((uint)safeTalentPoints);
+            payload.WriteUInt8(1); // vanilla has one talent spec
+            payload.WriteUInt8(0); // active spec
+            payload.WriteUInt8((byte)knownTalents.Count);
+            foreach (var talent in knownTalents)
+            {
+                payload.WriteUInt32(talent.Key);
+                payload.WriteUInt8((byte)Math.Min(talent.Value, byte.MaxValue));
+            }
+
+            payload.WriteUInt8(6); // WotLK glyph slots; vanilla has none, so send empty slots
+            for (int i = 0; i < 6; i++)
+                payload.WriteUInt16(0);
+
+            int spentTalentPoints = knownTalents.Sum(talent => talent.Value >= int.MaxValue ? int.MaxValue : (int)talent.Value + 1);
+            int observedTotalPoints = safeTalentPoints + spentTalentPoints;
+            int playerLevel = GetCurrentLegacyLevel();
+            int expectedTotalPoints = GetExpectedTalentPointsForLevel(playerLevel);
+            Log.Print(LogType.Debug, $"Sending talent info: points={safeTalentPoints}, spent={spentTalentPoints}, total={observedTotalPoints}/{expectedTotalPoints}, level={playerLevel}, talents={knownTalents.Count}, specs=1.");
+            if (expectedTotalPoints > 0 && observedTotalPoints < expectedTotalPoints)
+                Log.Print(LogType.Warn, $"Talent UI total is short by {expectedTotalPoints - observedTotalPoints} point(s); backend remaining={safeTalentPoints}, reconstructedSpent={spentTalentPoints}. This usually means some learned talent spells were not mapped into visible talent ranks.");
+
+            SendPacketToClient(new RawServerPacket(Opcode.SMSG_UPDATE_TALENT_DATA, ConnectionType.Instance, payload.GetData()));
         }
 
         private void HoldWotlkWorldObjectsDuringWorldPortSettle(List<ObjectUpdate> updates, UpdateObject updateObject)
@@ -446,7 +548,7 @@ namespace HermesProxy.World.Client
             updateObject.OutOfRangeGuids.Clear();
 
             Log.Print(LogType.Debug,
-                $"[WotLK] WORLDPORT-v14 holding destination world objects until client settle: heldUpdates={delayed.Count}, heldDestroys={gameState.PendingLoginDestroys.Count}, heldOor={gameState.PendingLoginOutOfRangeGuids.Count}, immediate={immediate.Count}.");
+                $"WORLDPORT-v14 holding destination world objects until client settle: heldUpdates={delayed.Count}, heldDestroys={gameState.PendingLoginDestroys.Count}, heldOor={gameState.PendingLoginOutOfRangeGuids.Count}, immediate={immediate.Count}.");
         }
 
         private void SendWotlkUpdateObjectBatches(UpdateObject source, List<ObjectUpdate> updates)
@@ -467,7 +569,7 @@ namespace HermesProxy.World.Client
             }
 
             Log.Print(LogType.Debug,
-                $"[WotLK] UPDATE_OBJECT-v14 batching object storm: updates={updates.Count}, destroys={source.DestroyedGuids.Count}, oor={source.OutOfRangeGuids.Count}, maxUpdates={MaxWotlkObjectUpdatesPerPacket}.");
+                $"UPDATE_OBJECT-v14 batching object storm: updates={updates.Count}, destroys={source.DestroyedGuids.Count}, oor={source.OutOfRangeGuids.Count}, maxUpdates={MaxWotlkObjectUpdatesPerPacket}.");
 
             int batch = 0;
             for (int index = 0; index < updates.Count; index += MaxWotlkObjectUpdatesPerPacket)
@@ -484,7 +586,7 @@ namespace HermesProxy.World.Client
                     chunk.DestroyedGuids.AddRange(source.DestroyedGuids);
 
                 Log.Print(LogType.Debug,
-                    $"[WotLK] UPDATE_OBJECT-v14 sending object batch {batch + 1}: updates={take}, start={index}.");
+                    $"UPDATE_OBJECT-v14 sending object batch {batch + 1}: updates={take}, start={index}.");
                 SendPacketToClient(chunk);
                 batch++;
             }
@@ -494,7 +596,7 @@ namespace HermesProxy.World.Client
                 UpdateObject destroyOnly = new UpdateObject(GetSession().GameState);
                 destroyOnly.DestroyedGuids.AddRange(source.DestroyedGuids);
                 Log.Print(LogType.Debug,
-                    $"[WotLK] UPDATE_OBJECT-v14 sending destroy-only batch: destroys={source.DestroyedGuids.Count}.");
+                    $"UPDATE_OBJECT-v14 sending destroy-only batch: destroys={source.DestroyedGuids.Count}.");
                 SendPacketToClient(destroyOnly);
             }
 
@@ -504,7 +606,7 @@ namespace HermesProxy.World.Client
                 UpdateObject farChunk = new UpdateObject(GetSession().GameState);
                 farChunk.OutOfRangeGuids.AddRange(source.OutOfRangeGuids.GetRange(index, take));
                 Log.Print(LogType.Debug,
-                    $"[WotLK] UPDATE_OBJECT-v14 sending out-of-range batch: guids={take}, start={index}.");
+                    $"UPDATE_OBJECT-v14 sending out-of-range batch: guids={take}, start={index}.");
                 SendPacketToClient(farChunk);
             }
         }
@@ -1266,12 +1368,12 @@ namespace HermesProxy.World.Client
                     moveInfo.RemoveMovementFlag(MovementFlagModern.Root | MovementFlagModern.PendingRoot);
 
                     if (flagsBeforeUnlock != moveInfo.Flags)
-                        Log.Print(LogType.Debug, $"[WotLK] Cleared self movement flags: 0x{flagsBeforeUnlock:X8} -> 0x{moveInfo.Flags:X8}");
+                        Log.Print(LogType.Debug, $"Cleared self movement flags: 0x{flagsBeforeUnlock:X8} -> 0x{moveInfo.Flags:X8}");
 
                     if (updateData.Type != UpdateTypeModern.Values)
                     {
                         Log.Print(LogType.Debug,
-                            $"[WotLK] Self movement create: flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, " +
+                            $"Self movement create: flags=0x{moveInfo.Flags:X8}, extra=0x{moveInfo.FlagsExtra:X4}, " +
                             $"pos=({moveInfo.Position.X:F3},{moveInfo.Position.Y:F3},{moveInfo.Position.Z:F3}), " +
                             $"speed walk/run/back/swim/fly/turn/pitch={moveInfo.WalkSpeed:F3}/{moveInfo.RunSpeed:F3}/{moveInfo.RunBackSpeed:F3}/{moveInfo.SwimSpeed:F3}/{moveInfo.FlightSpeed:F3}/{moveInfo.TurnRate:F3}/{moveInfo.PitchRate:F3}");
                     }
@@ -1507,15 +1609,18 @@ namespace HermesProxy.World.Client
                         ? MoveSetCollisionHeight.UpdateCollisionHeightReason.Mount
                         : MoveSetCollisionHeight.UpdateCollisionHeightReason.Force;
 
-                    MoveSetCollisionHeight height = new()
+                    if (!IsWotlkFrontendClient())
                     {
-                        MoverGUID = guid,
-                        Height = scaledHeight,
-                        Scale = displayScale,
-                        Reason = reason,
-                        MountDisplayID = (uint) mountDisplayId,
-                    };
-                    SendPacketToClient(height, Opcode.SMSG_UPDATE_OBJECT);
+                        MoveSetCollisionHeight height = new()
+                        {
+                            MoverGUID = guid,
+                            Height = scaledHeight,
+                            Scale = displayScale,
+                            Reason = reason,
+                            MountDisplayID = (uint) mountDisplayId,
+                        };
+                        SendPacketToClient(height, Opcode.SMSG_UPDATE_OBJECT);
+                    }
                 }
             }
         }
@@ -1963,11 +2068,11 @@ namespace HermesProxy.World.Client
                         updateData.UnitData.Flags |= (uint)UnitFlags.PlayerControlled;
 
                         if (flagsBefore != updateData.UnitData.Flags.Value)
-                            Log.Print(LogType.Debug, $"[WotLK] Sanitized self unit flags for WotLK frontend: 0x{flagsBefore:X8} -> 0x{updateData.UnitData.Flags.Value:X8}");
+                            Log.Print(LogType.Debug, $"Sanitized self unit flags for WotLK frontend: 0x{flagsBefore:X8} -> 0x{updateData.UnitData.Flags.Value:X8}");
                         else if (isCreate)
-                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags on create: 0x{flagsBefore:X8}");
+                            Log.Print(LogType.Debug, $"Self unit flags on create: 0x{flagsBefore:X8}");
                         else
-                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags update: 0x{flagsBefore:X8}");
+                            Log.Print(LogType.Debug, $"Self unit flags update: 0x{flagsBefore:X8}");
                     }
                 }
                 int UNIT_FIELD_FLAGS_2 = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_FLAGS_2);
@@ -1987,11 +2092,11 @@ namespace HermesProxy.World.Client
                         updateData.UnitData.Flags2 &= ~((uint)wotlkSelfMovementLocks2);
 
                         if (flags2Before != updateData.UnitData.Flags2.Value)
-                            Log.Print(LogType.Debug, $"[WotLK] Cleared self movement-lock unit flags2: 0x{flags2Before:X8} -> 0x{updateData.UnitData.Flags2.Value:X8}");
+                            Log.Print(LogType.Debug, $"Cleared self movement-lock unit flags2: 0x{flags2Before:X8} -> 0x{updateData.UnitData.Flags2.Value:X8}");
                         else if (isCreate)
-                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags2 on create: 0x{flags2Before:X8}");
+                            Log.Print(LogType.Debug, $"Self unit flags2 on create: 0x{flags2Before:X8}");
                         else
-                            Log.Print(LogType.Debug, $"[WotLK] Self unit flags2 update: 0x{flags2Before:X8}");
+                            Log.Print(LogType.Debug, $"Self unit flags2 update: 0x{flags2Before:X8}");
                     }
                 }
                 int UNIT_FIELD_AURASTATE = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_AURASTATE);
@@ -2106,11 +2211,11 @@ namespace HermesProxy.World.Client
 
                         if (isCreate)
                         {
-                            Log.Print(LogType.Debug, $"[WotLK] Self bytes1 on create: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
+                            Log.Print(LogType.Debug, $"Self bytes1 on create: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
                         }
                         else
                         {
-                            Log.Print(LogType.Debug, $"[WotLK] Self bytes1 update: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
+                            Log.Print(LogType.Debug, $"Self bytes1 update: stand={standBefore}, shapeshift={shapeshift}, animTier={animTier}");
                         }
                     }
                 }

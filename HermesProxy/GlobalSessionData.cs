@@ -7,6 +7,7 @@ using HermesProxy.World.Server;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System;
 using Framework.Realm;
 using Framework.GameMath;
 using HermesProxy.World.Server.Packets;
@@ -43,8 +44,24 @@ namespace HermesProxy
         public uint ServerStateIndex = 1; // incremented by any trade action
     }
 
+    public class PendingWotlkTalentLearn
+    {
+        public PendingWotlkTalentLearn(uint talentId, uint rank)
+        {
+            TalentId = talentId;
+            Rank = rank;
+            CreatedTick = System.Environment.TickCount;
+        }
+
+        public uint TalentId;
+        public uint Rank;
+        public int CreatedTick;
+    }
+
     public class GameSessionData
     {
+        private const int PendingWotlkTalentLearnTimeoutMs = 15000;
+
         public bool HasWsgHordeFlagCarrier;
         public bool HasWsgAllyFlagCarrier;
         public bool ChannelDisplayList;
@@ -151,6 +168,10 @@ namespace HermesProxy
         public List<ObjectUpdate> PendingLoginUpdates = new();
         public List<WowGuid128> PendingLoginDestroys = new();
         public List<WowGuid128> PendingLoginOutOfRangeGuids = new();
+        public Queue<PendingWotlkTalentLearn> PendingWotlkTalentLearns = new();
+        public Dictionary<uint, uint> WotlkKnownTalents = new();
+        public int? WotlkLastTalentPoints;
+        public int WotlkKnownTalentSpentAtLastPoints;
 
         private GameSessionData()
         {
@@ -162,6 +183,119 @@ namespace HermesProxy
             var self = new GameSessionData();
             self.CurrentPlayerStorage = new CurrentPlayerStorage(globalSession);
             return self;
+        }
+
+        public void QueueWotlkTalentLearn(uint talentId, uint rank)
+        {
+            PendingWotlkTalentLearns.Enqueue(new PendingWotlkTalentLearn(talentId, rank));
+        }
+
+        public int ImportWotlkKnownTalentsFromSpells(IEnumerable<uint> spellIds)
+        {
+            int changed = 0;
+            foreach (uint spellId in spellIds)
+            {
+                if (ImportWotlkKnownTalentFromSpell(spellId, out _, out _))
+                    changed++;
+            }
+
+            return changed;
+        }
+
+        public bool ImportWotlkKnownTalentFromSpell(uint spellId, out uint talentId, out uint rank)
+        {
+            talentId = 0;
+            rank = 0;
+            if (!GameData.TryGetTalentSpellRank(spellId, out TalentSpellRank talent))
+                return false;
+
+            talentId = talent.TalentID;
+            rank = talent.Rank;
+            return SetWotlkKnownTalent(talentId, rank);
+        }
+
+        public bool SetWotlkKnownTalent(uint talentId, uint rank)
+        {
+            if (WotlkKnownTalents.TryGetValue(talentId, out uint currentRank) && currentRank >= rank)
+                return false;
+
+            WotlkKnownTalents[talentId] = rank;
+            return true;
+        }
+
+        public void ClearWotlkTalentKnowledge()
+        {
+            PendingWotlkTalentLearns.Clear();
+            WotlkKnownTalents.Clear();
+            WotlkKnownTalentSpentAtLastPoints = 0;
+        }
+
+        public void NoteWotlkTalentPoints(int talentPoints)
+        {
+            int knownSpentBeforePointUpdate = GetWotlkKnownTalentPointSpend();
+            if (WotlkLastTalentPoints.HasValue)
+            {
+                int previousPoints = WotlkLastTalentPoints.Value;
+                if (talentPoints < previousPoints)
+                {
+                    int pointDelta = previousPoints - talentPoints;
+                    int alreadyConfirmedSpent = Math.Max(0, knownSpentBeforePointUpdate - WotlkKnownTalentSpentAtLastPoints);
+                    CommitPendingWotlkTalentLearns(Math.Max(0, pointDelta - alreadyConfirmedSpent));
+                }
+                else if (talentPoints > previousPoints + 1)
+                    ClearWotlkTalentKnowledge();
+            }
+
+            WotlkLastTalentPoints = talentPoints;
+            WotlkKnownTalentSpentAtLastPoints = GetWotlkKnownTalentPointSpend();
+        }
+
+        public int GetWotlkKnownTalentPointSpend()
+        {
+            int spent = 0;
+            foreach (var talent in WotlkKnownTalents)
+                spent += GetWotlkTalentRankPointCost(talent.Value);
+            return spent;
+        }
+
+        private static int GetWotlkTalentRankPointCost(uint rank)
+        {
+            return rank >= int.MaxValue ? int.MaxValue : (int)rank + 1;
+        }
+
+        private int GetPendingWotlkTalentLearnPointCost(PendingWotlkTalentLearn pending)
+        {
+            if (!WotlkKnownTalents.TryGetValue(pending.TalentId, out uint currentRank))
+                return GetWotlkTalentRankPointCost(pending.Rank);
+
+            if (currentRank >= pending.Rank)
+                return 0;
+
+            return (int)Math.Min(int.MaxValue, pending.Rank - currentRank);
+        }
+
+        private void CommitPendingWotlkTalentLearns(int pointBudget)
+        {
+            while (PendingWotlkTalentLearns.Count != 0)
+            {
+                PendingWotlkTalentLearn pending = PendingWotlkTalentLearns.Dequeue();
+                int age = unchecked(System.Environment.TickCount - pending.CreatedTick);
+                if (age > PendingWotlkTalentLearnTimeoutMs)
+                    continue;
+
+                int pointCost = GetPendingWotlkTalentLearnPointCost(pending);
+                if (pointCost <= 0)
+                    continue;
+
+                if (pointBudget <= 0)
+                    break;
+
+                if (pointCost > pointBudget)
+                    continue;
+
+                SetWotlkKnownTalent(pending.TalentId, pending.Rank);
+                pointBudget -= pointCost;
+            }
         }
         
         public uint GetCurrentGroupSize()

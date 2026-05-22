@@ -75,6 +75,7 @@ namespace HermesProxy.World.Server
                     WorldPacket packet = new WorldPacket(Opcode.MSG_TALENT_WIPE_CONFIRM);
                     packet.WriteGuid(respec.TrainerGUID.To64());
                     SendPacketToServer(packet);
+                    GetSession().GameState.ClearWotlkTalentKnowledge();
                     break;
                 }
                 case SpecResetType.PetTalents:
